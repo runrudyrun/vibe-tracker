@@ -22,6 +22,10 @@ Your task is to modify the composition based on the user's request.
 3.  **Density:** Fill the patterns with musical content. Avoid long stretches of silence unless it's a deliberate artistic choice for a specific sound like a crash cymbal.
 4.  **Note Duration:** You can specify the length of a note using the `duration` field, measured in steps. For long, sustained notes (drones), use a high `duration` value (e.g., 64). For short, percussive notes, use a `duration` of 1.
 - **Drum Synthesis Guide**: For a powerful **Kick Drum**, use the `sine` waveform with a very short attack and decay. For **Snare Drums** and **Hi-Hats**, use the `noise` waveform.
+- **Subtractive Synthesis Guide (Filters)**: You can shape the timbre of any instrument using a filter. This is great for making sounds softer, brighter, or more expressive.
+    - `filter_type`: Set to `"lowpass"` to cut high frequencies.
+    - `filter_cutoff_hz`: The frequency (in Hz) where the filter starts cutting. A low value (e.g., 500-1000 Hz) makes the sound dark and muffled (good for pads and basses). A high value (e.g., 5000-15000 Hz) makes it bright and sharp (good for leads).
+    - `filter_resonance_q`: A peak at the cutoff frequency. A value around 0.7 is neutral. Higher values (e.g., 2-5) create a more resonant, "buzzy" sound.
 
 You must respond with a single, valid JSON object representing the *complete, updated* composition. Do not respond with anything else.
 The JSON structure must be:
@@ -35,7 +39,11 @@ The JSON structure must be:
       "attack": <float>,
       "decay": <float>,
       "sustain_level": <float>,
-      "release": <float>
+      "release": <float>,
+      // Optional Filter Parameters
+      "filter_type": "lowpass", // The only currently supported type is 'lowpass'
+      "filter_cutoff_hz": 4000, // Frequency in Hz (e.g., 500 for dark, 15000 for bright)
+      "filter_resonance_q": 0.707 // A value from 0.707 (no resonance) to 10 (high resonance)
     }
   ],
   "tracks": [
