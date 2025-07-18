@@ -8,7 +8,7 @@ from .synthesis import SAMPLE_RATE
 
 
 class Sequencer:
-    """Plays a Composition object using a callback-based audio stream."""
+    """Plays a Composition object using a real-time, callback-based audio stream."""
 
     def __init__(self, composition: Composition, instruments: dict, logger=None):
         self._lock = threading.Lock()
@@ -19,96 +19,82 @@ class Sequencer:
         self.is_playing = False
         self._stream = None
         self._current_frame = 0
-        self._active_notes = [] # List of (start_frame, end_frame, audio_generator)
+        self._note_off_events = {}  # {frame: [(instrument, note_name), ...]}
 
     def update_composition(self, new_composition, new_instruments):
         """Thread-safely update the composition and instruments."""
         with self._lock:
             self.composition = new_composition
             self.instruments = new_instruments
-            self._current_frame = 0 # Reset playback position
+            self._current_frame = 0
+            self._note_off_events.clear()
+            # Stop all notes on all instruments immediately to prevent stuck notes
+            for instrument in self.instruments.values():
+                instrument.active_notes.clear()
 
     def _audio_callback(self, outdata, frames, time, status):
         """The heart of the sequencer. Called by the audio driver to get samples."""
-        # if status:
-        #     print(status) # This can be noisy, disable for now
-
         with self._lock:
-            # 1. Calculate time boundaries for this callback
             start_frame = self._current_frame
             end_frame = start_frame + frames
             step_duration_frames = int(self.composition.get_step_duration() * SAMPLE_RATE)
 
-            # 2. Check for new notes to trigger in this time block
             if step_duration_frames > 0:
-                # Determine the total length of the composition loop in steps.
-                # We'll use the length of the first pattern of the first track as the master length.
-                # A more robust solution might define this in the Composition object itself.
-                # Find the longest pattern in the composition to determine the master loop length.
+                # --- 1. Schedule Note On/Off Events for the current block ---
                 all_pattern_lengths = [len(p.steps) for t in self.composition.tracks for p in t.patterns if p.steps]
                 total_loop_steps = max(all_pattern_lengths) if all_pattern_lengths else 64
 
                 start_step = start_frame // step_duration_frames
                 end_step = end_frame // step_duration_frames
 
-                # --- DEBUG LOGGING ---
-                if self.logger and start_step > 0 and start_step % total_loop_steps == 0:
-                    self.logger.debug(f"Loop Start: Step={start_step}, TotalSteps={total_loop_steps}, Frame={self._current_frame}")
+                # Trigger Note OFF events scheduled for this block
+                frames_to_check = range(start_frame, end_frame)
+                for frame in frames_to_check:
+                    if frame in self._note_off_events:
+                        for instrument, note_name in self._note_off_events[frame]:
+                            instrument.note_off(note_name)
+                        del self._note_off_events[frame]
 
+                # Trigger Note ON events for steps in this block
                 for step in range(start_step, end_step + 1):
                     current_loop_step = step % total_loop_steps
-
                     for track in self.composition.tracks:
-                        if not track.patterns or not track.sequence:
-                            continue
-
-                        # Determine which pattern from the sequence to play
+                        if not track.patterns or not track.sequence: continue
+                        
                         sequence_index = (step // total_loop_steps) % len(track.sequence)
                         pattern_index = track.sequence[sequence_index]
+                        if pattern_index >= len(track.patterns): continue
                         
-                        if pattern_index >= len(track.patterns):
-                            continue # Sequence points to a non-existent pattern
-
                         pattern = track.patterns[pattern_index]
+                        if not pattern.steps: continue
 
-                        # If the pattern has notes, calculate the current step within that pattern using modulo
-                        # This makes shorter patterns loop correctly within the main composition loop.
-                        if pattern.steps:
-                            pattern_length = len(pattern.steps)
-                            pattern_step = current_loop_step % pattern_length
-                            note_event = pattern.steps[pattern_step]
+                        pattern_step = current_loop_step % len(pattern.steps)
+                        note_event = pattern.steps[pattern_step]
 
-                            if note_event and note_event.note:
-                                instrument = self.instruments.get(track.instrument_id)
-                                if instrument:
-                                    note_start_frame = step * step_duration_frames
-                                    audio_data = instrument.play_note(note_event.note, self.composition.get_step_duration())
-                                    audio_data *= note_event.velocity
-                                    self._active_notes.append((note_start_frame, audio_data))
+                        if note_event and note_event.note:
+                            instrument = self.instruments.get(track.instrument_id)
+                            if instrument:
+                                # NOTE ON
+                                instrument.note_on(note_event.note, note_event.velocity)
+                                
+                                # Schedule NOTE OFF
+                                duration_in_frames = note_event.duration * step_duration_frames
+                                note_off_frame = (step * step_duration_frames) + duration_in_frames
 
-            # 3. Mix audio for the current block
+                                if note_off_frame not in self._note_off_events:
+                                    self._note_off_events[note_off_frame] = []
+                                self._note_off_events[note_off_frame].append((instrument, note_event.note))
+
+            # --- 2. Mix audio from all instruments ---
             output_buffer = np.zeros((frames, 1), dtype=np.float32)
-            remaining_notes = []
-            for note_start_frame, note_audio in self._active_notes:
-                # Position of the note relative to the start of the callback block
-                note_pos_in_block = note_start_frame - start_frame
-                
-                # Slices for copying audio into the output buffer
-                slice_in_note = slice(max(0, -note_pos_in_block), len(note_audio))
-                slice_in_buffer = slice(max(0, note_pos_in_block), min(frames, note_pos_in_block + len(note_audio)))
-                
-                # If the note is still relevant, mix it in
-                if slice_in_buffer.start < slice_in_buffer.stop:
-                    # Adjust slice_in_note based on how much of the note fits in the buffer
-                    note_audio_segment = note_audio[slice_in_note]
-                    needed_len = slice_in_buffer.stop - slice_in_buffer.start
-                    output_buffer[slice_in_buffer, 0] += note_audio_segment[:needed_len]
-                    
-                    # If the note continues past this buffer, keep it
-                    if (note_start_frame + len(note_audio)) > end_frame:
-                        remaining_notes.append((note_start_frame, note_audio))
+            for instrument in self.instruments.values():
+                # Instrument processes its own active notes and returns mixed audio
+                output_buffer += instrument.process(frames).reshape(-1, 1)
 
-            self._active_notes = remaining_notes
+            # --- 3. Finalize and update state ---
+            # Simple limiter to prevent clipping
+            np.clip(output_buffer, -1.0, 1.0, out=output_buffer)
+            
             outdata[:] = output_buffer
             self._current_frame = end_frame
 
@@ -122,7 +108,7 @@ class Sequencer:
             return
 
         self._current_frame = 0
-        self._active_notes.clear()
+        self._note_off_events.clear()
         self._stream = sd.OutputStream(
             samplerate=SAMPLE_RATE,
             channels=1,
@@ -145,38 +131,43 @@ class Sequencer:
 
 
 if __name__ == '__main__':
-    # --- Create a test composition ---
-    print("Creating a test composition...")
-    
-    # 1. Instruments
-    # A simple sine wave for a kick drum sound (low frequency)
-    kick_instrument = Instrument(waveform_func=sine_wave, attack=0.01, decay=0.15, sustain_level=0, release=0.1)
-    instruments = {'kick': kick_instrument}
+    from music_structures import Pattern, Track, Composition, NoteEvent
+    from synthesis import Instrument, sine_wave, triangle_wave
 
-    # 2. Pattern
-    # A classic 4/4 kick drum pattern
-    kick_pattern = Pattern()
-    kick_note = 'C2' # A common kick drum note
-    kick_pattern.set_note(0, kick_note)
-    kick_pattern.set_note(16, kick_note)
-    kick_pattern.set_note(32, kick_note)
-    kick_pattern.set_note(48, kick_note)
+    print("Creating a test composition with a long drone note...")
+
+    # 1. Instruments
+    drone_instrument = Instrument(
+        waveform_func=triangle_wave, 
+        attack=0.5, 
+        decay=0.5, 
+        sustain_level=0.8, 
+        release=2.0
+    )
+    instruments = {'drone': drone_instrument}
+
+    # 2. Pattern with a long note
+    drone_pattern = Pattern()
+    # This note starts at step 0 and lasts for 64 steps (a full pattern)
+    long_note = NoteEvent(note='C3', velocity=0.7, duration=64)
+    drone_pattern.steps[0] = long_note
 
     # 3. Track
-    kick_track = Track(instrument_id='kick', patterns=[kick_pattern])
+    drone_track = Track(instrument_id='drone', patterns=[drone_pattern], sequence=[0])
 
     # 4. Composition
-    test_composition = Composition(bpm=120, tracks=[kick_track])
+    test_composition = Composition(bpm=60, tracks=[drone_track])
 
     # --- Play the composition ---
     sequencer = Sequencer(test_composition, instruments)
     
     try:
         sequencer.play()
-        print("Playing for 10 seconds... Press Ctrl+C to stop.")
+        print("Playing a long drone note for 10 seconds... Press Ctrl+C to stop.")
         time.sleep(10)
     except KeyboardInterrupt:
         print("Stopping...")
     finally:
         sequencer.stop()
+        print("Sequencer stopped.")
 

@@ -20,6 +20,7 @@ Your task is to modify the composition based on the user's request.
 1.  **Pattern Length:** All patterns must be exactly 64 steps long (from step 0 to 63).
 2.  **Seamless Looping:** Patterns must loop perfectly. The rhythm must flow continuously from the last step (63) back to the first (0) without a noticeable pause. To achieve this, **avoid ending patterns with long silence**. Place notes near the very end of the pattern (e.g., on steps 60, 61, 62, or 63) to create a smooth, uninterrupted transition back to the start.
 3.  **Density:** Fill the patterns with musical content. Avoid long stretches of silence unless it's a deliberate artistic choice for a specific sound like a crash cymbal.
+4.  **Note Duration:** You can specify the length of a note using the `duration` field, measured in steps. For a short, percussive note, you can omit `duration` (it will default to 1). For a long, sustained drone note that lasts a full measure, set its duration to 64.
 
 You must respond with a single, valid JSON object representing the *complete, updated* composition. Do not respond with anything else.
 The JSON structure must be:
@@ -40,7 +41,7 @@ The JSON structure must be:
     {
       "instrument_name": "<string>",
       "notes": [
-        {"step": <integer>, "note": "<string>"}
+        {"step": <integer>, "note": "<string>", "duration": <integer>}
       ]
     }
   ]

@@ -2,6 +2,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Vertical, Horizontal
 from textual.widgets import Header, Footer, Input, RichLog, Static
 import logging
+import json
 from textual.worker import Worker
 
 # --- Project Imports ---
@@ -22,94 +23,27 @@ class MusicEngine:
 
     def get_composition_as_dict(self):
         """Serializes the current composition and instruments into a dictionary for the LLM."""
-        if not self.composition or not self.composition.tracks:
-            return None
+        if not self.composition:
+            return None # Return None if there's no composition
 
-        # Create a reverse map from function object to its string name
-        waveform_name_map = {v: k for k, v in WAVEFORM_MAP.items()}
+        # Use the built-in to_dict methods for a consistent and reliable serialization
+        composition_dict = self.composition.to_dict()
+        composition_dict['instruments'] = [inst.to_dict() for inst in self.instruments.values()]
+        
+        return composition_dict
 
-        return {
-            "bpm": self.composition.bpm,
-            "instruments": [
-                {
-                    "name": name,
-                    "waveform": waveform_name_map.get(inst.waveform_func, 'sine'),
-                    "attack": inst.attack,
-                    "decay": inst.decay,
-                    "sustain_level": inst.sustain_level,
-                    "release": inst.release
-                } for name, inst in self.instruments.items()
-            ],
-            "tracks": [
-                {
-                    "instrument_name": track.instrument_id,
-                    "notes": [
-                        {"step": step_index, "note": note_event.note}
-                        for pattern in track.patterns
-                        for step_index, note_event in enumerate(pattern.steps)
-                        if note_event and note_event.note is not None
-                    ]
-                } for track in self.composition.tracks
-            ]
-        }
+    def update_composition_from_llm(self, music_data: dict) -> str:
+        """Updates the current composition based on data from the LLM."""
+        if not music_data or 'tracks' not in music_data:
+            return "AI returned empty or invalid data."
 
-    def update_composition_from_llm(self, music_data):
-        """Rebuilds the composition from LLM data and updates the sequencer."""
         try:
-            # Create a new composition object from the data
-            new_composition = Composition(bpm=music_data.get('bpm', 120))
-            new_instruments = {}
-
-            for inst_data in music_data.get('instruments', []):
-                name = inst_data['name']
-                waveform_func = get_waveform_function(inst_data['waveform'])
-                new_instruments[name] = Instrument(
-                    waveform_func=waveform_func,
-                    attack=float(inst_data['attack']),
-                    decay=float(inst_data['decay']),
-                    sustain_level=float(inst_data['sustain_level']),
-                    release=float(inst_data['release'])
-                )
-
-            for track_data in music_data.get('tracks', []):
-                instrument_name = track_data.get('instrument_name')
-                if not instrument_name or instrument_name not in new_instruments:
-                    continue
-
-                # --- Final Fix: Smart-trimming pattern silence ---
-                notes_data = track_data.get('notes', [])
-                if not notes_data:
-                    steps = [None] # Keep track alive with one step of silence
-                else:
-                    # First, build the full pattern, potentially with lots of silence
-                    max_step = max([d.get('step', 0) for d in notes_data])
-                    steps = [None] * (max_step + 1)
-                    for note_data in notes_data:
-                        step = note_data.get('step')
-                        note = note_data.get('note')
-                        if step is not None and note is not None:
-                            # Create the NoteEvent with only the valid arguments
-                            event_data = {'note': note_data.get('note'), 'velocity': note_data.get('velocity', 1.0)}
-                            steps[step] = NoteEvent.from_dict(event_data)
-
-                    # Now, find the first and last notes to trim silence
-                    first_note_idx = -1
-                    last_note_idx = -1
-                    for i, step_event in enumerate(steps):
-                        if step_event and step_event.note:
-                            if first_note_idx == -1:
-                                first_note_idx = i
-                            last_note_idx = i
-                    
-                    # Slice the pattern to the actual content
-                    if first_note_idx != -1:
-                        steps = steps[first_note_idx : last_note_idx + 1]
-                    else:
-                        steps = [None] # Should not happen if notes_data is not empty, but as a safeguard
-
-                new_pattern = Pattern(steps=steps)
-                new_track = Track(instrument_id=instrument_name, patterns=[new_pattern], sequence=[0])
-                new_composition.tracks.append(new_track)
+            # Use the robust from_dict methods to create the new composition and instruments
+            new_composition = Composition.from_dict(music_data)
+            new_instruments = {
+                inst_data['name']: Instrument.from_dict(inst_data)
+                for inst_data in music_data.get('instruments', [])
+            }
 
             # --- Log the structure of the new composition for debugging purposes ---
             self.logger.info("--- New Composition Received from LLM ---")
@@ -119,21 +53,31 @@ class MusicEngine:
                 self.logger.info(f"    Patterns: {len(track.patterns)}")
                 self.logger.info(f"    Sequence: {track.sequence}")
                 for j, pattern in enumerate(track.patterns):
-                    step_summary = ''.join(['N' if s and s.note else '_' for s in pattern.steps])
+                    # Represent note and its duration
+                    step_summary = []
+                    for s in pattern.steps:
+                        if s and s.note:
+                            if s.duration > 1:
+                                step_summary.append(f"N({s.duration})")
+                            else:
+                                step_summary.append("N")
+                        else:
+                            step_summary.append("_")
                     self.logger.info(f"      Pattern {j}: Steps: {len(pattern.steps)}")
-                    self.logger.info(f"      Pattern {j} Content: {step_summary}")
+                    self.logger.info(f"      Pattern {j} Content: {''.join(step_summary)}")
             self.logger.info("-----------------------------------------")
 
-            # Atomically update the sequencer with the new composition
-            self.sequencer.update_composition(new_composition, new_instruments)
-            
-            # Also update the engine's direct references for UI updates
+            # Atomically update the MusicEngine's and the sequencer's state
             self.composition = new_composition
-            self.instruments = new_instruments
+            self.instruments.update(new_instruments)
+            self.sequencer.update_composition(self.composition, self.instruments)
 
-            return "OK, I've created a new composition. Press SPACE to play."
-        except (KeyError, TypeError, ValueError) as e:
-            return f"Sorry, the AI returned data in a format I don't understand. Error: {e}"
+            track_count = len(new_composition.tracks)
+            return f"Composition updated: {track_count} tracks, BPM: {new_composition.bpm}."
+
+        except Exception as e:
+            self.logger.error(f"Failed to update composition: {e}", exc_info=True)
+            return f"Error processing AI response: {e}"
 
 class VibeTrackerApp(App):
     """A Textual app for the Vibe Tracker."""
@@ -183,6 +127,12 @@ class VibeTrackerApp(App):
         # 1. Get the current state of the music as a dictionary.
         current_composition_dict = self.music_engine.get_composition_as_dict()
 
+        # Log the context being sent to the LLM
+        if current_composition_dict:
+            self.logger.info(f"\n--- CONTEXT SENT TO LLM ---\n{json.dumps(current_composition_dict, indent=2)}\n---------------------------")
+        else:
+            self.logger.info("--- CONTEXT SENT TO LLM: Empty composition ---")
+
         # 2. Call the LLM with the user prompt and the current composition as context.
         music_data, error = self.music_engine.llm_generator.generate_music_from_prompt(
             prompt,
@@ -192,7 +142,11 @@ class VibeTrackerApp(App):
         # 3. Process the response.
         if error:
             self.log_widget.write(f"AI: Sorry, an error occurred: {error}")
+            self.logger.error(f"LLM Error: {error}")
         else:
+            # Log the data received from the LLM
+            self.logger.info(f"\n--- DATA RECEIVED FROM LLM ---\n{json.dumps(music_data, indent=2)}\n------------------------------")
+            
             # The `update_composition_from_llm` method will atomically update the live sequencer.
             response_message = self.music_engine.update_composition_from_llm(music_data)
             self.log_widget.write(f"AI: {response_message}")
