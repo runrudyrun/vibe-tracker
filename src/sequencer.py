@@ -10,10 +10,11 @@ from .synthesis import SAMPLE_RATE
 class Sequencer:
     """Plays a Composition object using a callback-based audio stream."""
 
-    def __init__(self, composition: Composition, instruments: dict):
+    def __init__(self, composition: Composition, instruments: dict, logger=None):
         self._lock = threading.Lock()
         self.composition = composition
         self.instruments = instruments
+        self.logger = logger
 
         self.is_playing = False
         self._stream = None
@@ -29,8 +30,8 @@ class Sequencer:
 
     def _audio_callback(self, outdata, frames, time, status):
         """The heart of the sequencer. Called by the audio driver to get samples."""
-        if status:
-            print(status)
+        # if status:
+        #     print(status) # This can be noisy, disable for now
 
         with self._lock:
             # 1. Calculate time boundaries for this callback
@@ -40,22 +41,50 @@ class Sequencer:
 
             # 2. Check for new notes to trigger in this time block
             if step_duration_frames > 0:
+                # Determine the total length of the composition loop in steps.
+                # We'll use the length of the first pattern of the first track as the master length.
+                # A more robust solution might define this in the Composition object itself.
+                # Find the longest pattern in the composition to determine the master loop length.
+                all_pattern_lengths = [len(p.steps) for t in self.composition.tracks for p in t.patterns if p.steps]
+                total_loop_steps = max(all_pattern_lengths) if all_pattern_lengths else 64
+
                 start_step = start_frame // step_duration_frames
                 end_step = end_frame // step_duration_frames
 
-                for step in range(start_step, end_step + 1):
-                    for track in self.composition.tracks:
-                        if not track.patterns: continue
-                        pattern = track.patterns[0]
-                        note_event = pattern.steps[step % len(pattern.steps)]
+                # --- DEBUG LOGGING ---
+                if self.logger and start_step > 0 and start_step % total_loop_steps == 0:
+                    self.logger.debug(f"Loop Start: Step={start_step}, TotalSteps={total_loop_steps}, Frame={self._current_frame}")
 
-                        if note_event and note_event.note:
-                            instrument = self.instruments.get(track.instrument_id)
-                            if instrument:
-                                note_start_frame = step * step_duration_frames
-                                audio_data = instrument.play_note(note_event.note, self.composition.get_step_duration())
-                                audio_data *= note_event.velocity
-                                self._active_notes.append((note_start_frame, audio_data))
+                for step in range(start_step, end_step + 1):
+                    current_loop_step = step % total_loop_steps
+
+                    for track in self.composition.tracks:
+                        if not track.patterns or not track.sequence:
+                            continue
+
+                        # Determine which pattern from the sequence to play
+                        sequence_index = (step // total_loop_steps) % len(track.sequence)
+                        pattern_index = track.sequence[sequence_index]
+                        
+                        if pattern_index >= len(track.patterns):
+                            continue # Sequence points to a non-existent pattern
+
+                        pattern = track.patterns[pattern_index]
+
+                        # If the pattern has notes, calculate the current step within that pattern using modulo
+                        # This makes shorter patterns loop correctly within the main composition loop.
+                        if pattern.steps:
+                            pattern_length = len(pattern.steps)
+                            pattern_step = current_loop_step % pattern_length
+                            note_event = pattern.steps[pattern_step]
+
+                            if note_event and note_event.note:
+                                instrument = self.instruments.get(track.instrument_id)
+                                if instrument:
+                                    note_start_frame = step * step_duration_frames
+                                    audio_data = instrument.play_note(note_event.note, self.composition.get_step_duration())
+                                    audio_data *= note_event.velocity
+                                    self._active_notes.append((note_start_frame, audio_data))
 
             # 3. Mix audio for the current block
             output_buffer = np.zeros((frames, 1), dtype=np.float32)
@@ -88,6 +117,8 @@ class Sequencer:
         if self.is_playing:
             return
         if not self.composition.tracks:
+            if self.logger:
+                self.logger.warning("Attempted to play an empty composition. No tracks to play.")
             return
 
         self._current_frame = 0
