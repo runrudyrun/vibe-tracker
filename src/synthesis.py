@@ -161,31 +161,51 @@ class ActiveNote:
         self.velocity = velocity
         self.instrument = instrument
         self.frequency = note_to_freq(note_name_to_key_number(note_name))
-        
-        self.envelope = ADSREnvelope(
-            instrument.attack, instrument.decay, instrument.sustain_level, instrument.release
-        )
-        self.waveform_gen = instrument.waveform_func(self.frequency)
+
+        # Create stateful generators for each oscillator
+        self.oscillators = []
+        for osc_params in self.instrument.oscillators:
+            waveform_func = get_waveform_function(osc_params.get('waveform', 'sine'))
+            self.oscillators.append({
+                'generator': waveform_func(self.frequency),
+                'amplitude': osc_params.get('amplitude', 1.0)
+            })
+
+        # Create and start the envelope
+        self.envelope = ADSREnvelope(instrument.attack, instrument.decay, instrument.sustain_level, instrument.release)
         self.envelope_gen = self.envelope.process()
         self.envelope.note_on()
 
     def note_off(self):
         self.envelope.note_off()
 
-    @property
     def is_active(self):
         return self.envelope.state != 'off'
 
     def process(self, num_samples):
-        """Generates a block of audio for this note."""
-        wave = np.zeros(num_samples)
-        for i in range(num_samples):
-            wave[i] = next(self.waveform_gen)
-        # Apply ADSR envelope
-        wave *= np.fromiter((next(self.envelope_gen) for _ in range(num_samples)), dtype=np.float32)
+        """Generates a block of audio for this note by mixing oscillators."""
+        if not self.is_active:
+            return np.zeros(num_samples)
+
+        # Get envelope values
+        envelope_samples = np.array([next(self.envelope_gen) for _ in range(num_samples)])
+
+        # Generate and mix samples from all oscillators
+        mixed_wave = np.zeros(num_samples)
+        for osc in self.oscillators:
+            wave_samples = np.array([next(osc['generator']) for _ in range(num_samples)])
+            mixed_wave += wave_samples * osc['amplitude']
+
+        # Normalize if necessary (e.g., if total amplitude > 1.0)
+        total_amplitude = sum(osc['amplitude'] for osc in self.oscillators)
+        if total_amplitude > 1.0:
+            mixed_wave /= total_amplitude
+
+        # Apply envelope to the mixed wave
+        wave = mixed_wave * envelope_samples
 
         # Apply filter if specified
-        if self.instrument.filter_type and self.instrument.filter_cutoff_hz < SAMPLE_RATE / 2 - 1: # Nyquist limit
+        if self.instrument.filter_type and self.instrument.filter_type != 'none':
             wave = apply_filter(
                 wave,
                 cutoff_hz=self.instrument.filter_cutoff_hz,
@@ -210,10 +230,15 @@ def apply_filter(signal, cutoff_hz, resonance_q, filter_type='lowpass', order=2)
     return signal
 
 class Instrument:
-    """Manages and synthesizes sound for multiple active notes."""
-    def __init__(self, name="default", waveform_func=sine_wave, attack=0.01, decay=0.1, sustain_level=0.7, release=0.2, filter_type=None, filter_cutoff_hz=20000, filter_resonance_q=0.707):
+    """Manages and synthesizes sound for multiple active notes using multiple oscillators."""
+    def __init__(self, name="default", oscillators=None, attack=0.01, decay=0.1, sustain_level=0.7, release=0.2, filter_type=None, filter_cutoff_hz=20000, filter_resonance_q=0.707):
         self.name = name
-        self.waveform_func = waveform_func
+        # Default to a single sine wave oscillator for backward compatibility
+        if oscillators is None:
+            self.oscillators = [{'waveform': 'sine', 'amplitude': 1.0}]
+        else:
+            self.oscillators = oscillators
+        
         self.attack = attack
         self.decay = decay
         self.sustain_level = sustain_level
@@ -228,10 +253,9 @@ class Instrument:
 
     def to_dict(self):
         """Serializes the instrument to a dictionary."""
-        waveform_name = next((name for name, func in WAVEFORM_MAP.items() if func == self.waveform_func), 'sine')
         return {
             'name': self.name,
-            'waveform': waveform_name,
+            'oscillators': self.oscillators,
             'attack': self.attack,
             'decay': self.decay,
             'sustain_level': self.sustain_level,
@@ -243,13 +267,18 @@ class Instrument:
 
     @classmethod
     def from_dict(cls, data):
-        """Creates an Instrument object from a dictionary provided by the LLM."""
-        waveform_name = data.get('waveform', 'sine')
-        waveform_func = get_waveform_function(waveform_name)
-
+        """Creates an Instrument object from a dictionary.
+           Supports both old ('waveform') and new ('oscillators') formats."""
+        
+        oscillators = data.get('oscillators')
+        # Backward compatibility: if 'oscillators' is missing, check for 'waveform'
+        if oscillators is None:
+            waveform_name = data.get('waveform', 'sine')
+            oscillators = [{'waveform': waveform_name, 'amplitude': 1.0}]
+            
         return cls(
             name=data.get('name', 'default'),
-            waveform_func=waveform_func,
+            oscillators=oscillators,
             attack=data.get('attack', 0.01),
             decay=data.get('decay', 0.1),
             sustain_level=data.get('sustain_level', 0.7),

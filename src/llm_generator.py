@@ -21,7 +21,12 @@ Your task is to modify the composition based on the user's request.
 2.  **Seamless Looping:** Patterns must loop perfectly. The rhythm must flow continuously from the last step (63) back to the first (0) without a noticeable pause. To achieve this, **avoid ending patterns with long silence**. Place notes near the very end of the pattern (e.g., on steps 60, 61, 62, or 63) to create a smooth, uninterrupted transition back to the start.
 3.  **Density:** Fill the patterns with musical content. Avoid long stretches of silence unless it's a deliberate artistic choice for a specific sound like a crash cymbal.
 4.  **Note Duration:** You can specify the length of a note using the `duration` field, measured in steps. For long, sustained notes (drones), use a high `duration` value (e.g., 64). For short, percussive notes, use a `duration` of 1.
-- **Drum Synthesis Guide**: For a powerful **Kick Drum**, use the `sine` waveform with a very short attack and decay. For **Snare Drums** and **Hi-Hats**, use the `noise` waveform.
+- **Additive Synthesis Guide (Oscillators)**: Create complex, rich sounds by layering multiple simple waveforms. Instead of a single `waveform`, you now define a list of `oscillators`.
+    - `oscillators`: A list of one or more oscillator objects.
+    - Each oscillator object has a `waveform` (e.g., 'sawtooth', 'sine') and an `amplitude` (from 0.0 to 1.0).
+    - The sum of amplitudes should ideally be around 1.0 to avoid clipping.
+    - *Example*: To create a rich pad, combine a 'sawtooth' wave at 60% amplitude with a 'sine' wave at 40% amplitude: `"oscillators": [{"waveform": "sawtooth", "amplitude": 0.6}, {"waveform": "sine", "amplitude": 0.4}]`
+- **Drum Synthesis Guide**: For a powerful **Kick Drum**, use a single `sine` oscillator with a very short attack and decay. For **Snare Drums** and **Hi-Hats**, use the `noise` waveform.
 - **Subtractive Synthesis Guide (Filters)**: You can shape the timbre of any instrument using a filter. This is great for making sounds softer, brighter, or more expressive.
     - `filter_type`: Set to `"lowpass"` to cut high frequencies.
     - `filter_cutoff_hz`: The frequency (in Hz) where the filter starts cutting. A low value (e.g., 500-1000 Hz) makes the sound dark and muffled (good for pads and basses). A high value (e.g., 5000-15000 Hz) makes it bright and sharp (good for leads).
@@ -35,7 +40,9 @@ The JSON structure must be:
   "instruments": [
     {
       "name": "<string>",
-      "waveform": "<string, one of 'sine', 'square', 'sawtooth', 'triangle', 'noise'>",
+      "oscillators": [
+        {"waveform": "<string, one of 'sine', 'square', 'sawtooth', 'triangle', 'noise'>", "amplitude": <float, 0.0 to 1.0>}
+      ],
       "attack": <float>,
       "decay": <float>,
       "sustain_level": <float>,

@@ -131,14 +131,14 @@ class Sequencer:
 
 
 if __name__ == '__main__':
-    from music_structures import Pattern, Track, Composition, NoteEvent
-    from synthesis import Instrument, sine_wave, triangle_wave
+    from .music_structures import Pattern, Track, Composition, NoteEvent
+    from .synthesis import Instrument, sine_wave, triangle_wave
 
     print("Creating a test composition with a long drone note...")
 
     # 1. Instruments
     drone_instrument = Instrument(
-        waveform_func=triangle_wave, 
+        oscillators=[{'waveform': 'triangle', 'amplitude': 1.0}], 
         attack=0.5, 
         decay=0.5, 
         sustain_level=0.8, 
@@ -163,7 +163,7 @@ if __name__ == '__main__':
     
     try:
         sequencer.play()
-        print("Playing a long drone note for 10 seconds... Press Ctrl+C to stop.")
+        print("Playing a complex drone note for 10 seconds... Press Ctrl+C to stop.")
         time.sleep(10)
     except KeyboardInterrupt:
         print("Stopping...")
