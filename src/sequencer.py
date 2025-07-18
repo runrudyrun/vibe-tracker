@@ -3,78 +3,114 @@ import threading
 import numpy as np
 import sounddevice as sd
 
-from src.music_structures import Composition, Pattern, Track
-from src.synthesis import Instrument, SAMPLE_RATE, sine_wave
+from .music_structures import Composition
+from .synthesis import SAMPLE_RATE
+
 
 class Sequencer:
-    """Plays a Composition object in real-time."""
+    """Plays a Composition object using a callback-based audio stream."""
 
     def __init__(self, composition: Composition, instruments: dict):
+        self._lock = threading.Lock()
         self.composition = composition
         self.instruments = instruments
+
         self.is_playing = False
-        self._playback_thread = None
+        self._stream = None
+        self._current_frame = 0
+        self._active_notes = [] # List of (start_frame, end_frame, audio_generator)
 
-    def _play_note_async(self, audio_data):
-        """Plays audio data in a non-blocking way."""
-        def play():
-            sd.play(audio_data.astype(np.float32), SAMPLE_RATE)
-            sd.wait()
-        # Run playback in a separate thread to avoid blocking the main loop
-        thread = threading.Thread(target=play)
-        thread.start()
+    def update_composition(self, new_composition, new_instruments):
+        """Thread-safely update the composition and instruments."""
+        with self._lock:
+            self.composition = new_composition
+            self.instruments = new_instruments
+            self._current_frame = 0 # Reset playback position
 
-    def _sequencer_loop(self):
-        """The main loop that iterates through the composition."""
-        step_duration = self.composition.get_step_duration()
-        current_step = 0
+    def _audio_callback(self, outdata, frames, time, status):
+        """The heart of the sequencer. Called by the audio driver to get samples."""
+        if status:
+            print(status)
 
-        while self.is_playing:
-            loop_start_time = time.time()
+        with self._lock:
+            # 1. Calculate time boundaries for this callback
+            start_frame = self._current_frame
+            end_frame = start_frame + frames
+            step_duration_frames = int(self.composition.get_step_duration() * SAMPLE_RATE)
 
-            for track in self.composition.tracks:
-                # For now, we assume a simple loop of the first pattern
-                if not track.patterns:
-                    continue
+            # 2. Check for new notes to trigger in this time block
+            if step_duration_frames > 0:
+                start_step = start_frame // step_duration_frames
+                end_step = end_frame // step_duration_frames
+
+                for step in range(start_step, end_step + 1):
+                    for track in self.composition.tracks:
+                        if not track.patterns: continue
+                        pattern = track.patterns[0]
+                        note_event = pattern.steps[step % len(pattern.steps)]
+
+                        if note_event and note_event.note:
+                            instrument = self.instruments.get(track.instrument_id)
+                            if instrument:
+                                note_start_frame = step * step_duration_frames
+                                audio_data = instrument.play_note(note_event.note, self.composition.get_step_duration())
+                                audio_data *= note_event.velocity
+                                self._active_notes.append((note_start_frame, audio_data))
+
+            # 3. Mix audio for the current block
+            output_buffer = np.zeros((frames, 1), dtype=np.float32)
+            remaining_notes = []
+            for note_start_frame, note_audio in self._active_notes:
+                # Position of the note relative to the start of the callback block
+                note_pos_in_block = note_start_frame - start_frame
                 
-                pattern = track.patterns[0] # Simple case: play first pattern
-                note_event = pattern.steps[current_step]
+                # Slices for copying audio into the output buffer
+                slice_in_note = slice(max(0, -note_pos_in_block), len(note_audio))
+                slice_in_buffer = slice(max(0, note_pos_in_block), min(frames, note_pos_in_block + len(note_audio)))
+                
+                # If the note is still relevant, mix it in
+                if slice_in_buffer.start < slice_in_buffer.stop:
+                    # Adjust slice_in_note based on how much of the note fits in the buffer
+                    note_audio_segment = note_audio[slice_in_note]
+                    needed_len = slice_in_buffer.stop - slice_in_buffer.start
+                    output_buffer[slice_in_buffer, 0] += note_audio_segment[:needed_len]
+                    
+                    # If the note continues past this buffer, keep it
+                    if (note_start_frame + len(note_audio)) > end_frame:
+                        remaining_notes.append((note_start_frame, note_audio))
 
-                if note_event and note_event.note:
-                    instrument = self.instruments.get(track.instrument_id)
-                    if instrument:
-                        # Generate audio for one step duration
-                        audio_data = instrument.play_note(
-                            note_event.note,
-                            step_duration
-                        )
-                        # Apply note velocity (volume)
-                        audio_data *= note_event.velocity
-                        self._play_note_async(audio_data)
-
-            # Move to the next step
-            current_step = (current_step + 1) % len(pattern.steps)
-
-            # Wait for the correct amount of time to maintain BPM
-            processing_time = time.time() - loop_start_time
-            time_to_wait = max(0, step_duration - processing_time)
-            time.sleep(time_to_wait)
+            self._active_notes = remaining_notes
+            outdata[:] = output_buffer
+            self._current_frame = end_frame
 
     def play(self):
         """Starts the sequencer playback."""
-        if not self.is_playing:
-            self.is_playing = True
-            self._playback_thread = threading.Thread(target=self._sequencer_loop)
-            self._playback_thread.start()
-            print("Sequencer started.")
+        if self.is_playing:
+            return
+        if not self.composition.tracks:
+            return
+
+        self._current_frame = 0
+        self._active_notes.clear()
+        self._stream = sd.OutputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            callback=self._audio_callback,
+            dtype='float32'
+        )
+        self._stream.start()
+        self.is_playing = True
 
     def stop(self):
-        """Stops the sequencer playback."""
-        if self.is_playing:
-            self.is_playing = False
-            if self._playback_thread:
-                self._playback_thread.join() # Wait for the thread to finish
-            print("Sequencer stopped.")
+        """Stops the sequencer playback and closes the stream."""
+        if not self.is_playing:
+            return
+        
+        if self._stream:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
+        self.is_playing = False
 
 
 if __name__ == '__main__':

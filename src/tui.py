@@ -1,95 +1,97 @@
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, Horizontal
 from textual.widgets import Header, Footer, Input, RichLog, Static
+from textual.worker import Worker
 
 # --- Project Imports ---
-from src.command_parser import parse_command
-from src.music_generator import generate_pattern
-from src.music_structures import Composition, Track
-from src.sequencer import Sequencer
-from src.synthesis import Instrument, sine_wave, white_noise
-from src.project_manager import save_project, load_project
-from src.exporter import render_composition_to_wav
+from .music_structures import Composition, Track, Pattern
+from .sequencer import Sequencer
+from .synthesis import Instrument, get_waveform_function, WAVEFORM_MAP
+from .llm_generator import LLMGenerator
+
 
 class MusicEngine:
-    """Manages the musical state of the application."""
-    def __init__(self):
+    """Manages the musical state of the application using an LLM."""
+    def __init__(self, app_ref):
+        self.app = app_ref
         self.composition = Composition(bpm=120)
-        self.instruments = self._create_default_instruments()
+        self.instruments = {}
         self.sequencer = Sequencer(self.composition, self.instruments)
-        self.next_track_id = 0
+        self.llm_generator = LLMGenerator()
 
-    def _create_default_instruments(self):
-        """Create a bank of default instruments."""
+    def get_composition_as_dict(self):
+        """Serializes the current composition and instruments into a dictionary for the LLM."""
+        if not self.composition or not self.composition.tracks:
+            return None
+
+        # Create a reverse map from function object to its string name
+        waveform_name_map = {v: k for k, v in WAVEFORM_MAP.items()}
+
         return {
-            'kick': Instrument(waveform_func=sine_wave, attack=0.01, decay=0.2, sustain_level=0, release=0.1),
-            'snare': Instrument(waveform_func=white_noise, attack=0.01, decay=0.15, sustain_level=0.1, release=0.1),
-            'hat': Instrument(waveform_func=white_noise, attack=0.005, decay=0.05, sustain_level=0, release=0.05),
+            "bpm": self.composition.bpm,
+            "instruments": [
+                {
+                    "name": name,
+                    "waveform": waveform_name_map.get(inst.waveform_func, 'sine'),
+                    "attack": inst.attack,
+                    "decay": inst.decay,
+                    "sustain_level": inst.sustain_level,
+                    "release": inst.release
+                } for name, inst in self.instruments.items()
+            ],
+            "tracks": [
+                {
+                    "instrument_name": track.instrument_id,
+                    "notes": [
+                        {"step": step_index, "note": note_event.note}
+                        for pattern in track.patterns
+                        for step_index, note_event in enumerate(pattern.steps)
+                        if note_event and note_event.note is not None
+                    ]
+                } for track in self.composition.tracks
+            ]
         }
 
-    def process_command(self, command_text: str):
-        """Parses a command, generates music, and updates the composition."""
-        parsed_cmd = parse_command(command_text)
+    def update_composition_from_llm(self, music_data):
+        """Rebuilds the composition from LLM data and updates the sequencer."""
+        try:
+            # Create a new composition object from the data
+            new_composition = Composition(bpm=music_data.get('bpm', 120))
+            new_instruments = {}
 
-        # --- Handle Save/Load --- #
-        if parsed_cmd.action == 'save':
-            if not parsed_cmd.filename:
-                return "Please specify a filename, e.g., 'save my_song.json'."
-            filename = parsed_cmd.filename if parsed_cmd.filename.endswith('.json') else f"{parsed_cmd.filename}.json"
-            error = save_project(self.composition, filename)
-            return f"Project saved to {filename}." if not error else f"Error: {error}"
+            for inst_data in music_data.get('instruments', []):
+                name = inst_data['name']
+                waveform_func = get_waveform_function(inst_data['waveform'])
+                new_instruments[name] = Instrument(
+                    waveform_func=waveform_func,
+                    attack=float(inst_data['attack']),
+                    decay=float(inst_data['decay']),
+                    sustain_level=float(inst_data['sustain_level']),
+                    release=float(inst_data['release'])
+                )
 
-        if parsed_cmd.action == 'load':
-            if not parsed_cmd.filename:
-                return "Please specify a filename, e.g., 'load my_song.json'."
-            filename = parsed_cmd.filename if parsed_cmd.filename.endswith('.json') else f"{parsed_cmd.filename}.json"
-            new_composition, error = load_project(filename)
-            if error:
-                return f"Error: {error}"
+            for track_data in music_data.get('tracks', []):
+                instrument_name = track_data['instrument_name']
+                if instrument_name not in new_instruments:
+                    continue
+                
+                new_pattern = Pattern()
+                for note_data in track_data.get('notes', []):
+                    new_pattern.set_note(int(note_data['step']), note_data['note'])
+                
+                new_track = Track(instrument_id=instrument_name, patterns=[new_pattern])
+                new_composition.tracks.append(new_track)
+
+            # Atomically update the sequencer with the new composition
+            self.sequencer.update_composition(new_composition, new_instruments)
+            
+            # Also update the engine's direct references for UI updates
             self.composition = new_composition
-            self.sequencer.stop()
-            self.sequencer = Sequencer(self.composition, self.instruments)
-            self.update_track_display() # Explicitly update display after loading
-            return f"Project {filename} loaded successfully."
+            self.instruments = new_instruments
 
-        if parsed_cmd.action in ['export', 'render']:
-            if not parsed_cmd.filename:
-                return "Please specify a filename, e.g., 'export my_song.wav'."
-            filename = parsed_cmd.filename if parsed_cmd.filename.endswith('.wav') else f"{parsed_cmd.filename}.wav"
-            error = render_composition_to_wav(self.composition, self.instruments, filename)
-            return f"Composition exported to {filename}." if not error else f"Error: {error}"
-
-        if parsed_cmd.action in ['delete', 'remove']:
-            track_id = parsed_cmd.target_track_id
-            if track_id is None:
-                return "Please specify which track to delete, e.g., 'delete 0'."
-            if 0 <= track_id < len(self.composition.tracks):
-                deleted_track = self.composition.tracks.pop(track_id)
-                self.sequencer.stop()
-                self.sequencer = Sequencer(self.composition, self.instruments)
-                return f"OK, I've deleted track {track_id} ({deleted_track.instrument_id})."
-            else:
-                return f"Track {track_id} not found."
-        
-        instrument_name = parsed_cmd.instrument
-        if not instrument_name:
-            return "Sorry, I don't know what instrument to use."
-
-        if instrument_name not in self.instruments:
-            return f"I don't have an instrument called '{instrument_name}'. Try: kick, snare, hat."
-
-        # Generate a new pattern
-        new_pattern = generate_pattern(parsed_cmd)
-        
-        # Create a new track for this pattern
-        new_track = Track(instrument_id=instrument_name, patterns=[new_pattern])
-        self.composition.tracks.append(new_track)
-        
-        # Re-initialize the sequencer with the updated composition
-        self.sequencer.stop()
-        self.sequencer = Sequencer(self.composition, self.instruments)
-
-        return f"OK, I've created a new '{instrument_name}' pattern. Press SPACE to play."
+            return "OK, I've created a new composition. Press SPACE to play."
+        except (KeyError, TypeError, ValueError) as e:
+            return f"Sorry, the AI returned data in a format I don't understand. Error: {e}"
 
 class VibeTrackerApp(App):
     """A Textual app for the Vibe Tracker."""
@@ -107,39 +109,55 @@ class VibeTrackerApp(App):
         yield Footer()
         with Horizontal(id="app-grid"):
             with Vertical(id="left-pane"):
-                yield RichLog(id="log", wrap=True, highlight=True)
-                yield Input(placeholder="e.g., 'create a techno kick'", id="command_input")
+                yield RichLog(id="log", wrap=True, highlight=True, min_width=60)
+                yield Input(placeholder="e.g., 'a funky bassline with a slow disco beat'", id="command_input")
             with Vertical(id="right-pane"):
                 yield Static("No tracks yet.", id="track_display")
 
     def on_mount(self) -> None:
-        self.music_engine = MusicEngine()
-        log = self.query_one(RichLog)
-        log.write("Welcome! I'm your AI music assistant. Give me a command to start.")
+        self.music_engine = MusicEngine(self)
+        self.log_widget = self.query_one(RichLog)
+        self.log_widget.write("Welcome! I'm your AI music assistant. Give me a command to start.")
         self.query_one("#command_input").focus()
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_input_submitted(self, event: Input.Submitted) -> None:
         command = event.value
-        log = self.query_one(RichLog)
-        log.write(f"> {command}")
+        self.log_widget.write(f"> {command}")
         self.query_one(Input).clear()
+        self.log_widget.write("AI: Thinking... (this might take a moment)")
+        self.run_worker(self.generate_music(command), exclusive=True)
 
-        response = self.music_engine.process_command(command)
-        log.write(f"AI: {response}")
-        self.update_track_display()
+    async def generate_music(self, prompt: str) -> None:
+        """Worker function to call the LLM and process the response, now context-aware and non-blocking."""
+        # 1. Get the current state of the music as a dictionary.
+        current_composition_dict = self.music_engine.get_composition_as_dict()
+
+        # 2. Call the LLM with the user prompt and the current composition as context.
+        music_data, error = self.music_engine.llm_generator.generate_music_from_prompt(
+            prompt,
+            context_composition=current_composition_dict
+        )
+
+        # 3. Process the response.
+        if error:
+            self.log_widget.write(f"AI: Sorry, an error occurred: {error}")
+        else:
+            # The `update_composition_from_llm` method will atomically update the live sequencer.
+            response_message = self.music_engine.update_composition_from_llm(music_data)
+            self.log_widget.write(f"AI: {response_message}")
+            self.update_track_display()
 
     def action_toggle_play(self) -> None:
         """Toggle music playback."""
-        log = self.query_one(RichLog)
         if self.music_engine.sequencer.is_playing:
             self.music_engine.sequencer.stop()
-            log.write("Playback stopped.")
+            self.log_widget.write("Playback stopped.")
         else:
             if not self.music_engine.composition.tracks:
-                log.write("There's nothing to play yet! Create a track first.")
+                self.log_widget.write("There's nothing to play yet! Create a track first.")
                 return
             self.music_engine.sequencer.play()
-            log.write("Playback started...")
+            self.log_widget.write("Playback started...")
 
     def update_track_display(self) -> None:
         """Updates the track display widget with the current list of tracks."""
@@ -149,7 +167,9 @@ class VibeTrackerApp(App):
             track_display.update("No tracks yet.")
             return
 
-        display_text = "[b]Current Tracks:[/b]\n\n"
+        display_text = "[b]Current Composition:[/b]\n\n"
+        display_text += f"[b]BPM:[/b] {self.music_engine.composition.bpm}\n\n"
+        display_text += "[b]Tracks:[/b]\n"
         for i, track in enumerate(tracks):
             display_text += f"- Track {i}: {track.instrument_id}\n"
         

@@ -21,16 +21,26 @@ def sawtooth_wave(frequency, duration):
 
 def triangle_wave(frequency, duration):
     """Generates a triangle wave."""
-
-def white_noise(duration):
-    """Generates white noise."""
-    return np.random.uniform(-1, 1, int(SAMPLE_RATE * duration))
     t = np.linspace(0, duration, int(SAMPLE_RATE * duration), False)
     return 2 * np.abs(sawtooth_wave(frequency, duration)) - 1
 
-# --- Note to Frequency Conversion ---
+def white_noise(frequency, duration):
+    """Generates white noise. Frequency is ignored."""
+    return np.random.uniform(-1, 1, int(SAMPLE_RATE * duration))
 
-# A4 is 440 Hz, which is the 49th key on a standard piano (starting from A0)
+WAVEFORM_MAP = {
+    'sine': sine_wave,
+    'square': square_wave,
+    'sawtooth': sawtooth_wave,
+    'triangle': triangle_wave,
+    'noise': white_noise,
+}
+
+def get_waveform_function(name: str):
+    """Returns the waveform function based on its name."""
+    return WAVEFORM_MAP.get(name.lower(), sine_wave)
+
+# --- Note to Frequency Conversion ---
 NOTE_OFFSET = 49
 A4_FREQ = 440.0
 
@@ -55,7 +65,62 @@ def note_to_freq(note_number):
     """Converts a piano key number to a frequency in Hz."""
     return A4_FREQ * (2 ** ((note_number - NOTE_OFFSET) / 12.0))
 
-# --- Instrument Class (Placeholder) ---
+# --- Sound Processing ---
+
+def apply_envelope(audio, attack, decay, sustain_level, release, sample_rate):
+    """Applies an ADSR envelope to an audio signal."""
+    total_samples = len(audio)
+    envelope = np.zeros(total_samples)
+
+    attack_samples = int(attack * sample_rate)
+    decay_samples = int(decay * sample_rate)
+    release_samples = int(release * sample_rate)
+    sustain_samples = total_samples - attack_samples - decay_samples - release_samples
+
+    # If the note is shorter than the attack+decay+release, scale them down
+    if sustain_samples < 0:
+        # Proportional scaling
+        total_adsr_time = attack + decay + release
+        if total_adsr_time > 0:
+            ratio = (total_samples / sample_rate) / total_adsr_time
+            attack_samples = int(attack * ratio * sample_rate)
+            decay_samples = int(decay * ratio * sample_rate)
+            release_samples = int(release * ratio * sample_rate)
+            # The rest is sustain, which will be 0 or very small
+            sustain_samples = total_samples - attack_samples - decay_samples - release_samples
+        else:
+            # If all times are zero, do nothing
+            attack_samples = decay_samples = release_samples = sustain_samples = 0
+
+    # Ensure total samples match up to avoid off-by-one errors from rounding
+    current_total = attack_samples + decay_samples + sustain_samples + release_samples
+    if current_total != total_samples:
+        sustain_samples += total_samples - current_total
+
+    # Build the envelope
+    start = 0
+    if attack_samples > 0:
+        envelope[start:start + attack_samples] = np.linspace(0, 1, attack_samples)
+        start += attack_samples
+
+    if decay_samples > 0:
+        envelope[start:start + decay_samples] = np.linspace(1, sustain_level, decay_samples)
+        start += decay_samples
+
+    # Sustain phase
+    if sustain_samples > 0:
+        start = attack_samples + decay_samples
+        end = start + sustain_samples
+        envelope[start:end] = sustain_level
+
+    # Release phase
+    if release_samples > 0:
+        start = total_samples - release_samples
+        envelope[start:] = np.linspace(sustain_level, 0, release_samples)
+
+    return audio * envelope
+
+# --- Instrument Class ---
 
 class Instrument:
     """Represents a sound generator with a specific waveform and envelope."""
@@ -67,96 +132,12 @@ class Instrument:
         self.release = release
 
     def play_note(self, note: str, duration: float):
-        # For noise, frequency is irrelevant
-        if self.waveform_func == white_noise:
-            wave = self.waveform_func(duration)
-            # Apply ADSR envelope
-            total_samples = int(duration * SAMPLE_RATE)
-            envelope = np.zeros(total_samples)
-
-            attack_samples = int(self.attack * SAMPLE_RATE)
-            decay_samples = int(self.decay * SAMPLE_RATE)
-            release_samples = int(self.release * SAMPLE_RATE)
-            sustain_samples = total_samples - attack_samples - decay_samples - release_samples
-
-            if sustain_samples < 0:
-                # If duration is shorter than attack + decay + release, scale them down
-                total_envelope_time = self.attack + self.decay + self.release
-                # Avoid division by zero if total_envelope_time is 0
-                scale_factor = duration / total_envelope_time if total_envelope_time > 0 else 0
-                attack_samples = int(self.attack * scale_factor * SAMPLE_RATE)
-                decay_samples = int(self.decay * scale_factor * SAMPLE_RATE)
-                # The rest is release
-                sustain_samples = 0
-                release_samples = total_samples - attack_samples - decay_samples
-                if release_samples < 0: release_samples = 0
-
-            # Attack phase
-            if attack_samples > 0:
-                envelope[:attack_samples] = np.linspace(0, 1, attack_samples)
-
-            # Decay phase
-            if decay_samples > 0:
-                start = attack_samples
-                end = start + decay_samples
-                envelope[start:end] = np.linspace(1, self.sustain_level, decay_samples)
-
-            # Sustain phase
-            if sustain_samples > 0:
-                start = attack_samples + decay_samples
-                end = start + sustain_samples
-                envelope[start:end] = self.sustain_level
-
-            # Release phase
-            if release_samples > 0:
-                start = total_samples - release_samples
-                envelope[start:] = np.linspace(self.sustain_level, 0, release_samples)
-
-            return wave * envelope
-
         """Generates the audio data for a given note and duration."""
         key_number = note_name_to_key_number(note)
         frequency = note_to_freq(key_number)
+        
+        # Generate the basic waveform
         wave = self.waveform_func(frequency, duration)
-
-        # Apply ADSR envelope
-        total_samples = int(duration * SAMPLE_RATE)
-        envelope = np.zeros(total_samples)
-
-        attack_samples = int(self.attack * SAMPLE_RATE)
-        decay_samples = int(self.decay * SAMPLE_RATE)
-        release_samples = int(self.release * SAMPLE_RATE)
-        sustain_samples = total_samples - attack_samples - decay_samples - release_samples
-
-        if sustain_samples < 0:
-            # If duration is shorter than attack + decay + release, scale them down
-            total_envelope_time = self.attack + self.decay + self.release
-            scale_factor = duration / total_envelope_time
-            attack_samples = int(self.attack * scale_factor * SAMPLE_RATE)
-            decay_samples = int(self.decay * scale_factor * SAMPLE_RATE)
-            # The rest is release
-            sustain_samples = 0
-            release_samples = total_samples - attack_samples - decay_samples
-            if release_samples < 0: release_samples = 0
-
-        # Attack phase
-        envelope[:attack_samples] = np.linspace(0, 1, attack_samples)
-
-        # Decay phase
-        if decay_samples > 0:
-            start = attack_samples
-            end = start + decay_samples
-            envelope[start:end] = np.linspace(1, self.sustain_level, decay_samples)
-
-        # Sustain phase
-        if sustain_samples > 0:
-            start = attack_samples + decay_samples
-            end = start + sustain_samples
-            envelope[start:end] = self.sustain_level
-
-        # Release phase
-        if release_samples > 0:
-            start = total_samples - release_samples
-            envelope[start:] = np.linspace(self.sustain_level, 0, release_samples)
-
-        return wave * envelope
+        
+        # Apply the ADSR envelope
+        return apply_envelope(wave, self.attack, self.decay, self.sustain_level, self.release, SAMPLE_RATE)
