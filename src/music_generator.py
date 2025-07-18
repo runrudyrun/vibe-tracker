@@ -1,10 +1,10 @@
 from src.command_parser import ParsedCommand
 from src.music_structures import Pattern
 
-# --- Note Definitions (MIDI-like) ---
-KICK_NOTE = 36  # C2
-SNARE_NOTE = 38 # D2
-HAT_NOTE = 42   # F#2
+# --- Note Definitions (Musical) ---
+KICK_NOTE = 'C2'   # A low note for a kick drum sound
+SNARE_NOTE = 'C4'  # A mid-range note for a snare
+HAT_NOTE = 'F#4'   # A high note for a hi-hat
 
 def generate_pattern(command: ParsedCommand) -> Pattern:
     """Generates a musical pattern based on a parsed command."""

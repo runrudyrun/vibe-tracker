@@ -26,7 +26,7 @@ class Sequencer:
 
     def _sequencer_loop(self):
         """The main loop that iterates through the composition."""
-        step_duration = self.composition.get_step_duration_seconds()
+        step_duration = self.composition.get_step_duration()
         current_step = 0
 
         while self.is_playing:
@@ -40,16 +40,16 @@ class Sequencer:
                 pattern = track.patterns[0] # Simple case: play first pattern
                 note_event = pattern.steps[current_step]
 
-                if note_event:
+                if note_event and note_event.note:
                     instrument = self.instruments.get(track.instrument_id)
                     if instrument:
                         # Generate audio for one step duration
                         audio_data = instrument.play_note(
-                            note_event.note_number,
+                            note_event.note,
                             step_duration
                         )
-                        # Apply note volume
-                        audio_data *= note_event.volume
+                        # Apply note velocity (volume)
+                        audio_data *= note_event.velocity
                         self._play_note_async(audio_data)
 
             # Move to the next step
@@ -84,19 +84,19 @@ if __name__ == '__main__':
     # 1. Instruments
     # A simple sine wave for a kick drum sound (low frequency)
     kick_instrument = Instrument(waveform_func=sine_wave, attack=0.01, decay=0.15, sustain_level=0, release=0.1)
-    instruments = {0: kick_instrument}
+    instruments = {'kick': kick_instrument}
 
     # 2. Pattern
     # A classic 4/4 kick drum pattern
     kick_pattern = Pattern()
-    kick_note = 36 # C2, a common kick drum note
+    kick_note = 'C2' # A common kick drum note
     kick_pattern.set_note(0, kick_note)
     kick_pattern.set_note(16, kick_note)
     kick_pattern.set_note(32, kick_note)
     kick_pattern.set_note(48, kick_note)
 
     # 3. Track
-    kick_track = Track(instrument_id=0, patterns=[kick_pattern])
+    kick_track = Track(instrument_id='kick', patterns=[kick_pattern])
 
     # 4. Composition
     test_composition = Composition(bpm=120, tracks=[kick_track])

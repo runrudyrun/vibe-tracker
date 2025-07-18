@@ -9,6 +9,7 @@ class ParsedCommand:
     style: Optional[str] = None
     tempo_qualifier: Optional[str] = None # e.g., 'fast', 'slow'
     duration_bars: Optional[int] = None
+    filename: Optional[str] = None
     raw_text: str = ''
 
 def parse_command(text: str) -> ParsedCommand:
@@ -22,15 +23,18 @@ def parse_command(text: str) -> ParsedCommand:
     command = ParsedCommand(raw_text=text)
 
     # Keywords for different aspects
-    ACTIONS = {'create', 'make', 'add', 'generate', 'play', 'delete', 'remove'}
+    ACTIONS = {'create', 'make', 'add', 'generate', 'play', 'delete', 'remove', 'save', 'load', 'export', 'render'}
     INSTRUMENTS = {'kick', 'drum', 'bass', 'lead', 'synth', 'snare', 'hat'}
     STYLES = {'techno', 'house', 'hip-hop', 'ambient'}
     TEMPO_MODS = {'fast': 140, 'slow': 90, 'medium': 120}
 
     # --- Simple keyword matching ---
-    for word in words:
+    for i, word in enumerate(words):
         if word in ACTIONS:
             command.action = word
+            # For save/load, the next word is the filename
+            if command.action in ['save', 'load', 'export', 'render'] and i + 1 < len(words):
+                command.filename = words[i+1]
         if word in INSTRUMENTS:
             command.instrument = word
         if word in STYLES:

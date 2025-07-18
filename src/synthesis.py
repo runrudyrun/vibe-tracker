@@ -34,8 +34,25 @@ def white_noise(duration):
 NOTE_OFFSET = 49
 A4_FREQ = 440.0
 
+def note_name_to_key_number(note_name: str) -> int:
+    """Converts a note name like 'C4' or 'F#5' to a piano key number (A0=1, A4=49)."""
+    if not isinstance(note_name, str) or len(note_name) < 2:
+        return 49  # Default to A4 if format is invalid
+
+    note_map = {'C': -8, 'C#': -7, 'D': -6, 'D#': -5, 'E': -4, 'F': -3, 'F#': -2, 'G': -1, 'G#': 0, 'A': 1, 'A#': 2, 'B': 3}
+    
+    octave_str = note_name[-1]
+    note_part = note_name[:-1].upper()
+
+    if not octave_str.isdigit() or note_part not in note_map:
+        return 49 # Default to A4
+
+    octave = int(octave_str)
+    key_number = note_map[note_part] + (octave - 4) * 12 + NOTE_OFFSET
+    return key_number
+
 def note_to_freq(note_number):
-    """Converts a MIDI-like note number to a frequency in Hz."""
+    """Converts a piano key number to a frequency in Hz."""
     return A4_FREQ * (2 ** ((note_number - NOTE_OFFSET) / 12.0))
 
 # --- Instrument Class (Placeholder) ---
@@ -49,7 +66,7 @@ class Instrument:
         self.sustain_level = sustain_level
         self.release = release
 
-    def play_note(self, note_number, duration):
+    def play_note(self, note: str, duration: float):
         # For noise, frequency is irrelevant
         if self.waveform_func == white_noise:
             wave = self.waveform_func(duration)
@@ -98,7 +115,8 @@ class Instrument:
             return wave * envelope
 
         """Generates the audio data for a given note and duration."""
-        frequency = note_to_freq(note_number)
+        key_number = note_name_to_key_number(note)
+        frequency = note_to_freq(key_number)
         wave = self.waveform_func(frequency, duration)
 
         # Apply ADSR envelope

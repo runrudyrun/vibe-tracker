@@ -8,6 +8,8 @@ from src.music_generator import generate_pattern
 from src.music_structures import Composition, Track
 from src.sequencer import Sequencer
 from src.synthesis import Instrument, sine_wave, white_noise
+from src.project_manager import save_project, load_project
+from src.exporter import render_composition_to_wav
 
 class MusicEngine:
     """Manages the musical state of the application."""
@@ -28,6 +30,34 @@ class MusicEngine:
     def process_command(self, command_text: str):
         """Parses a command, generates music, and updates the composition."""
         parsed_cmd = parse_command(command_text)
+
+        # --- Handle Save/Load --- #
+        if parsed_cmd.action == 'save':
+            if not parsed_cmd.filename:
+                return "Please specify a filename, e.g., 'save my_song.json'."
+            filename = parsed_cmd.filename if parsed_cmd.filename.endswith('.json') else f"{parsed_cmd.filename}.json"
+            error = save_project(self.composition, filename)
+            return f"Project saved to {filename}." if not error else f"Error: {error}"
+
+        if parsed_cmd.action == 'load':
+            if not parsed_cmd.filename:
+                return "Please specify a filename, e.g., 'load my_song.json'."
+            filename = parsed_cmd.filename if parsed_cmd.filename.endswith('.json') else f"{parsed_cmd.filename}.json"
+            new_composition, error = load_project(filename)
+            if error:
+                return f"Error: {error}"
+            self.composition = new_composition
+            self.sequencer.stop()
+            self.sequencer = Sequencer(self.composition, self.instruments)
+            self.update_track_display() # Explicitly update display after loading
+            return f"Project {filename} loaded successfully."
+
+        if parsed_cmd.action in ['export', 'render']:
+            if not parsed_cmd.filename:
+                return "Please specify a filename, e.g., 'export my_song.wav'."
+            filename = parsed_cmd.filename if parsed_cmd.filename.endswith('.wav') else f"{parsed_cmd.filename}.wav"
+            error = render_composition_to_wav(self.composition, self.instruments, filename)
+            return f"Composition exported to {filename}." if not error else f"Error: {error}"
 
         if parsed_cmd.action in ['delete', 'remove']:
             track_id = parsed_cmd.target_track_id
