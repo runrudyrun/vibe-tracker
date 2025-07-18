@@ -10,7 +10,7 @@ from .music_structures import Composition, Track, Pattern, NoteEvent
 from .sequencer import Sequencer
 from .synthesis import Instrument, get_waveform_function, WAVEFORM_MAP
 from .llm_generator import LLMGenerator
-
+from .exporter import save_composition_to_json, render_composition_to_wav
 
 class MusicEngine:
     """Manages the musical state of the application using an LLM."""
@@ -83,22 +83,31 @@ class VibeTrackerApp(App):
     """A Textual app for the Vibe Tracker."""
 
     TITLE = "Vibe Tracker - AI Music Studio"
-    SUB_TITLE = "Compose music with natural language"
+    SUB_TITLE = "Compose music with natural language | SPACE: Play/Pause | Ctrl-S: Save JSON | Ctrl-E: Export WAV | Ctrl-Q: Quit"
 
     BINDINGS = [
         ("ctrl+q", "quit", "Quit"),
         ("space", "toggle_play", "Play/Pause"),
+        ("ctrl+s", "save_json", "Save JSON"),
+        ("ctrl+e", "export_wav", "Export WAV"),
     ]
+
+    def __init__(self):
+        super().__init__()
+        self.input_mode = "prompt"
+        self.input_widget = Input(placeholder="Enter a prompt for the AI...", id="command_input")
+        self.log_widget = RichLog(wrap=True, highlight=True, markup=True)
+        self.track_display = Static("No tracks yet.", id="track_display")
 
     def compose(self) -> ComposeResult:
         yield Header()
+        with Vertical():
+            with Horizontal(id="main_container"):
+                yield self.log_widget
+                with Vertical(id="right_panel"):
+                    yield self.track_display
+            yield self.input_widget
         yield Footer()
-        with Horizontal(id="app-grid"):
-            with Vertical(id="left-pane"):
-                yield RichLog(id="log", wrap=True, highlight=True, min_width=60)
-                yield Input(placeholder="e.g., 'a funky bassline with a slow disco beat'", id="command_input")
-            with Vertical(id="right-pane"):
-                yield Static("No tracks yet.", id="track_display")
 
     def on_mount(self) -> None:
         # --- Setup Logging ---
@@ -111,16 +120,27 @@ class VibeTrackerApp(App):
         self.logger.info("Application starting up...")
 
         self.music_engine = MusicEngine(self.logger)
-        self.log_widget = self.query_one(RichLog)
         self.log_widget.write("Welcome! I'm your AI music assistant. Give me a command to start.")
         self.query_one("#command_input").focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        command = event.value
-        self.log_widget.write(f"> {command}")
-        self.query_one(Input).clear()
-        self.log_widget.write("AI: Thinking... (this might take a moment)")
-        self.run_worker(self.generate_music(command), exclusive=True)
+        value = event.value
+        self.input_widget.clear()
+        if self.input_mode == 'prompt':
+            self.log_widget.write(f"> {value}")
+            self.log_widget.write("AI: Thinking... (this might take a moment)")
+            self.run_worker(self.generate_music(value), exclusive=True)
+        elif self.input_mode == 'save_json':
+            self.run_worker(self.worker_save_json(value))
+            self.set_input_mode('prompt')
+        elif self.input_mode == 'export_wav':
+            self.run_worker(self.worker_export_wav(value))
+            self.set_input_mode('prompt')
+
+    def set_input_mode(self, mode: str, prompt_text: str = "Enter a prompt..."):
+        self.input_mode = mode
+        self.input_widget.placeholder = prompt_text
+        self.input_widget.focus()
 
     async def generate_music(self, prompt: str) -> None:
         """Worker function to call the LLM and process the response, now context-aware and non-blocking."""
@@ -163,6 +183,38 @@ class VibeTrackerApp(App):
                 return
             self.music_engine.sequencer.play()
             self.log_widget.write("Playback started...")
+
+    def action_save_json(self) -> None:
+        if not self.music_engine.composition.tracks:
+            self.log_widget.write("Cannot save an empty composition.")
+            return
+        self.set_input_mode('save_json', "Enter filename for JSON (e.g., 'my_song.json'):")
+
+    async def worker_save_json(self, filepath: str):
+        self.log_widget.write(f"Saving to {filepath}...")
+        error = save_composition_to_json(
+            self.music_engine.composition, self.music_engine.instruments, filepath
+        )
+        if error:
+            self.log_widget.write(f"[bold red]Error saving JSON:[/] {error}")
+        else:
+            self.log_widget.write(f"[bold green]Successfully saved to {filepath}[/]")
+
+    def action_export_wav(self) -> None:
+        if not self.music_engine.composition.tracks:
+            self.log_widget.write("Cannot export an empty composition.")
+            return
+        self.set_input_mode('export_wav', "Enter filename for WAV (e.g., 'my_song.wav'):")
+
+    async def worker_export_wav(self, filepath: str):
+        self.log_widget.write(f"Rendering to {filepath}... (this may take a moment)")
+        error = render_composition_to_wav(
+            self.music_engine.composition, self.music_engine.instruments, filepath
+        )
+        if error:
+            self.log_widget.write(f"[bold red]Error exporting WAV:[/] {error}")
+        else:
+            self.log_widget.write(f"[bold green]Successfully exported to {filepath}[/]")
 
     def update_track_display(self) -> None:
         """Updates the track display widget with the current list of tracks."""

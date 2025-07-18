@@ -16,18 +16,53 @@ def sine_wave(frequency):
         yield np.sin(phase)
         phase += increment
 
-def square_wave(frequency):
-    """Generates a continuous square wave."""
-    for sample in sine_wave(frequency):
-        yield np.sign(sample)
+def poly_blep(phase, phase_increment):
+    """A polynomial approximation of a band-limited step function."""
+    # phase is the current phase of the oscillator.
+    # phase_increment is the phase change per sample.
+    # The function checks if the phase is near a discontinuity (0 or 1) and applies a correction.
+    
+    # Check for discontinuity at phase 0
+    if phase < phase_increment:
+        t = phase / phase_increment
+        return t + t - t * t - 1.0
+    # Check for discontinuity at phase 1 (the wrap-around point)
+    elif phase > 1.0 - phase_increment:
+        t = (phase - 1.0) / phase_increment
+        return t * t + t + t + 1.0
+    # No discontinuity, no correction needed
+    else:
+        return 0.0
 
 def sawtooth_wave(frequency):
-    """Generates a continuous sawtooth wave."""
-    period = SAMPLE_RATE / frequency
-    phase = 0
+    """Generates a continuous, anti-aliased sawtooth wave using PolyBLEP."""
+    phase = 0.0
+    phase_increment = frequency / SAMPLE_RATE
     while True:
-        yield (phase / period) * 2 - 1
-        phase = (phase + 1) % period
+        # Naive sawtooth wave
+        saw = 2.0 * phase - 1.0
+        # Apply PolyBLEP correction
+        saw -= poly_blep(phase, phase_increment)
+        yield saw
+        phase += phase_increment
+        if phase >= 1.0:
+            phase -= 1.0
+
+def square_wave(frequency):
+    """Generates a continuous, anti-aliased square wave using PolyBLEP."""
+    phase = 0.0
+    phase_increment = frequency / SAMPLE_RATE
+    while True:
+        # Naive square wave (1 for first half, -1 for second half)
+        square = 1.0 if phase < 0.5 else -1.0
+        # Apply PolyBLEP correction at both discontinuities (0 and 0.5)
+        square += poly_blep(phase, phase_increment)
+        # The phase for the second discontinuity is shifted by 0.5
+        square -= poly_blep((phase + 0.5) % 1.0, phase_increment)
+        yield square
+        phase += phase_increment
+        if phase >= 1.0:
+            phase -= 1.0
 
 def triangle_wave(frequency):
     """Generates a continuous triangle wave."""
