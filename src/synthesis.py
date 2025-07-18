@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.signal import butter, lfilter
 import time
 
 # --- Configuration ---
@@ -142,22 +143,52 @@ class ActiveNote:
 
     def process(self, num_samples):
         """Generates a block of audio for this note."""
-        buffer = np.zeros(num_samples)
+        wave = np.zeros(num_samples)
         for i in range(num_samples):
-            wave_sample = next(self.waveform_gen)
-            env_sample = next(self.envelope_gen)
-            buffer[i] = wave_sample * env_sample * self.velocity
-        return buffer
+            wave[i] = next(self.waveform_gen)
+        # Apply ADSR envelope
+        wave *= np.fromiter((next(self.envelope_gen) for _ in range(num_samples)), dtype=np.float32)
+
+        # Apply filter if specified
+        if self.instrument.filter_type and self.instrument.filter_cutoff_hz < SAMPLE_RATE / 2 - 1: # Nyquist limit
+            wave = apply_filter(
+                wave,
+                cutoff_hz=self.instrument.filter_cutoff_hz,
+                resonance_q=self.instrument.filter_resonance_q,
+                filter_type=self.instrument.filter_type
+            )
+        return wave * self.velocity
+
+def apply_filter(signal, cutoff_hz, resonance_q, filter_type='lowpass', order=2):
+    """Applies a filter to a signal."""
+    nyquist = 0.5 * SAMPLE_RATE
+    normal_cutoff = cutoff_hz / nyquist
+
+    if normal_cutoff >= 1.0:
+        return signal # Return original signal if cutoff is at or above Nyquist
+
+    if filter_type == 'lowpass':
+        b, a = butter(order, normal_cutoff, btype='low', analog=False, fs=None) # Q not directly supported in butter, resonance is an approximation
+        y = lfilter(b, a, signal)
+        return y
+    # Add other filter types like 'highpass' here in the future
+    return signal
 
 class Instrument:
     """Manages and synthesizes sound for multiple active notes."""
-    def __init__(self, name="default", waveform_func=sine_wave, attack=0.01, decay=0.1, sustain_level=0.7, release=0.2):
+    def __init__(self, name="default", waveform_func=sine_wave, attack=0.01, decay=0.1, sustain_level=0.7, release=0.2, filter_type=None, filter_cutoff_hz=20000, filter_resonance_q=0.707):
         self.name = name
         self.waveform_func = waveform_func
         self.attack = attack
         self.decay = decay
         self.sustain_level = sustain_level
         self.release = release
+
+        # Filter parameters
+        self.filter_type = filter_type
+        self.filter_cutoff_hz = filter_cutoff_hz
+        self.filter_resonance_q = filter_resonance_q
+
         self.active_notes = []
 
     def to_dict(self):
@@ -169,7 +200,10 @@ class Instrument:
             'attack': self.attack,
             'decay': self.decay,
             'sustain_level': self.sustain_level,
-            'release': self.release
+            'release': self.release,
+            'filter_type': self.filter_type,
+            'filter_cutoff_hz': self.filter_cutoff_hz,
+            'filter_resonance_q': self.filter_resonance_q
         }
 
     @classmethod
@@ -184,7 +218,10 @@ class Instrument:
             attack=data.get('attack', 0.01),
             decay=data.get('decay', 0.1),
             sustain_level=data.get('sustain_level', 0.7),
-            release=data.get('release', 0.2)
+            release=data.get('release', 0.2),
+            filter_type=data.get('filter_type'),
+            filter_cutoff_hz=data.get('filter_cutoff_hz', 20000),
+            filter_resonance_q=data.get('filter_resonance_q', 0.707)
         )
 
     def note_on(self, note_name: str, velocity: float = 1.0):

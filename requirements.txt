@@ -3,3 +3,4 @@ sounddevice
 textual
 google-generativeai
 python-dotenv
+scipy
