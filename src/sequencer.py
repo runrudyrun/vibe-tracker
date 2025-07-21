@@ -1,4 +1,5 @@
 import time
+import bisect
 import threading
 import numpy as np
 import sounddevice as sd
@@ -19,7 +20,7 @@ class Sequencer:
         self.is_playing = False
         self._stream = None
         self._current_frame = 0
-        self._note_off_events = {}  # {frame: [(instrument, note_name), ...]}
+        self._note_off_events = []  # List of (frame, (instrument, note_name)) tuples
 
     def update_composition(self, new_composition, new_instruments):
         """Thread-safely update the composition and instruments."""
@@ -47,15 +48,23 @@ class Sequencer:
                 start_step = start_frame // step_duration_frames
                 end_step = end_frame // step_duration_frames
 
-                # Trigger Note OFF events scheduled for this block
-                frames_to_check = range(start_frame, end_frame)
-                for frame in frames_to_check:
-                    if frame in self._note_off_events:
-                        for instrument, note_name in self._note_off_events[frame]:
+                # --- 1a. Trigger scheduled Note OFF events --- 
+                processed_events = 0
+                for i, (frame, (instrument, note_name)) in enumerate(self._note_off_events):
+                    if frame < end_frame:
+                        if frame >= start_frame:
+                            # This event is within the current block
                             instrument.note_off(note_name)
-                        del self._note_off_events[frame]
+                        processed_events = i + 1
+                    else:
+                        # Events are sorted, so we can stop here
+                        break
+                
+                # --- 1b. Clean up processed Note OFF events ---
+                if processed_events > 0:
+                    self._note_off_events = self._note_off_events[processed_events:]
 
-                # Trigger Note ON events for steps in this block
+                # --- 1c. Trigger Note ON events for steps in this block ---
                 for step in range(start_step, end_step + 1):
                     current_loop_step = step % total_loop_steps
                     for track in self.composition.tracks:
@@ -78,12 +87,12 @@ class Sequencer:
                                 instrument.note_on(note_event.note, note_event.velocity)
                                 
                                 # Schedule NOTE OFF
-                                duration_in_frames = note_event.duration * step_duration_frames
+                                duration_in_frames = int(note_event.duration * step_duration_frames)
                                 note_off_frame = (step * step_duration_frames) + duration_in_frames
-
-                                if note_off_frame not in self._note_off_events:
-                                    self._note_off_events[note_off_frame] = []
-                                self._note_off_events[note_off_frame].append((instrument, note_event.note))
+                                
+                                # Insert into sorted list to maintain order
+                                event_tuple = (note_off_frame, (instrument, note_event.note))
+                                bisect.insort(self._note_off_events, event_tuple)
 
             # --- 2. Mix audio from all instruments ---
             output_buffer = np.zeros((frames, 1), dtype=np.float32)
