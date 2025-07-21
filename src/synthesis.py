@@ -223,10 +223,14 @@ def apply_filter(signal, cutoff_hz, resonance_q, filter_type='lowpass', order=2)
         return signal # Return original signal if cutoff is at or above Nyquist
 
     if filter_type == 'lowpass':
-        b, a = butter(order, normal_cutoff, btype='low', analog=False, fs=None) # Q not directly supported in butter, resonance is an approximation
+        b, a = butter(order, normal_cutoff, btype='low', analog=False, fs=None)
         y = lfilter(b, a, signal)
         return y
-    # Add other filter types like 'highpass' here in the future
+    elif filter_type == 'highpass':
+        b, a = butter(order, normal_cutoff, btype='high', analog=False, fs=None)
+        y = lfilter(b, a, signal)
+        return y
+    # Add other filter types like 'bandpass', 'bandstop' here in the future
     return signal
 
 class Instrument:
@@ -315,4 +319,14 @@ class Instrument:
                 output_buffer += note.process(num_samples)
                 notes_to_keep.append(note)
         self.active_notes = notes_to_keep
+        
+        # Apply filter if specified
+        if self.filter_type and len(output_buffer) > 0:
+            output_buffer = apply_filter(
+                output_buffer, 
+                self.filter_cutoff_hz, 
+                self.filter_resonance_q, 
+                self.filter_type
+            )
+        
         return output_buffer
