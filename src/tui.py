@@ -110,6 +110,7 @@ class VibeTrackerApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        """Called when the app is mounted."""
         # --- Setup Logging ---
         self.logger = logging.getLogger(__name__)
         handler = logging.FileHandler("vibe_tracker.log", mode='w')

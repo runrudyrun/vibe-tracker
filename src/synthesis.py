@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.signal import butter, lfilter
 import time
+import logging
 
 # --- Configuration ---
 SAMPLE_RATE = 44100  # Samples per second
@@ -184,7 +185,7 @@ class ActiveNote:
 
     def process(self, num_samples):
         """Generates a block of audio for this note by mixing oscillators."""
-        if not self.is_active:
+        if not self.is_active():
             return np.zeros(num_samples)
 
         # Get envelope values
@@ -311,22 +312,46 @@ class Instrument:
 
     def process(self, num_samples: int):
         """Mixes all active notes into a single audio buffer."""
+        logger = logging.getLogger(__name__)
+        
+        logger.debug(f"[INSTRUMENT] {self.name} - Processing {num_samples} samples, active_notes: {len(self.active_notes)}")
+        
         output_buffer = np.zeros(num_samples)
         # Process notes and remove inactive ones
         notes_to_keep = []
-        for note in self.active_notes:
-            if note.is_active:
-                output_buffer += note.process(num_samples)
-                notes_to_keep.append(note)
+        
+        for i, note in enumerate(self.active_notes):
+            logger.debug(f"[INSTRUMENT] {self.name} - Processing note {i}: {note.note_name}, is_active: {note.is_active()}")
+            
+            if note.is_active():
+                try:
+                    note_output = note.process(num_samples)
+                    output_buffer += note_output
+                    notes_to_keep.append(note)
+                    logger.debug(f"[INSTRUMENT] {self.name} - Note {note.note_name} processed successfully")
+                except Exception as e:
+                    logger.error(f"[INSTRUMENT] {self.name} - Error processing note {note.note_name}: {e}")
+                    # Remove problematic note by setting envelope to off state
+                    note.envelope.state = 'off'
+            else:
+                logger.debug(f"[INSTRUMENT] {self.name} - Removing inactive note: {note.note_name}")
+        
         self.active_notes = notes_to_keep
+        logger.debug(f"[INSTRUMENT] {self.name} - Kept {len(notes_to_keep)} active notes")
         
         # Apply filter if specified
         if self.filter_type and len(output_buffer) > 0:
-            output_buffer = apply_filter(
-                output_buffer, 
-                self.filter_cutoff_hz, 
-                self.filter_resonance_q, 
-                self.filter_type
-            )
+            logger.debug(f"[INSTRUMENT] {self.name} - Applying {self.filter_type} filter")
+            try:
+                output_buffer = apply_filter(
+                    output_buffer, 
+                    self.filter_cutoff_hz, 
+                    self.filter_resonance_q, 
+                    self.filter_type
+                )
+                logger.debug(f"[INSTRUMENT] {self.name} - Filter applied successfully")
+            except Exception as e:
+                logger.error(f"[INSTRUMENT] {self.name} - Error applying filter: {e}")
         
+        logger.debug(f"[INSTRUMENT] {self.name} - Process completed")
         return output_buffer
