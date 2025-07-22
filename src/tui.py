@@ -13,6 +13,7 @@ from .synthesis import Instrument, get_waveform_function, WAVEFORM_MAP, SAMPLE_R
 from .llm_generator import LLMGenerator
 from .exporter import save_composition_to_json, render_composition_to_wav
 from .track_display import TrackDisplayWidget, PlaybackVisualizationWidget
+from .version import get_version
 
 class MusicEngine:
     """Manages the musical state of the application using an LLM."""
@@ -84,14 +85,15 @@ class MusicEngine:
 class VibeTrackerApp(App):
     """A Textual app for the Vibe Tracker."""
 
-    TITLE = "Vibe Tracker - AI Music Studio"
-    SUB_TITLE = "Compose music with natural language | SPACE: Play/Pause | Ctrl-S: Save JSON | Ctrl-E: Export WAV | Ctrl-Q: Quit"
+    TITLE = f"Vibe Tracker - AI Music Studio v{get_version()}"
+    SUB_TITLE = "Compose music with natural language | SPACE: Play/Pause | Ctrl-S: Save JSON | Ctrl-E: Export WAV | Ctrl-V: Version | Ctrl-Q: Quit"
 
     BINDINGS = [
         ("ctrl+q", "quit", "Quit"),
         ("space", "toggle_play", "Play/Pause"),
         ("ctrl+s", "save_json", "Save JSON"),
         ("ctrl+e", "export_wav", "Export WAV"),
+        ("ctrl+v", "show_version", "Version Info"),
     ]
 
     def __init__(self):
@@ -263,6 +265,26 @@ class VibeTrackerApp(App):
             self.music_engine.composition.bpm,
             self.music_engine.sequencer.is_playing
         )
+
+    def action_show_version(self) -> None:
+        """Display version information."""
+        from .version import get_version_info, version_manager
+        
+        version = get_version()
+        major, minor, patch = get_version_info()
+        
+        version_info = f"""[bold cyan]Vibe Tracker Version Information[/]
+
+[bold]Current Version:[/] {version}
+[bold]Major:[/] {major} (Breaking changes)
+[bold]Minor:[/] {minor} (New features)
+[bold]Patch:[/] {patch} (Bug fixes)
+
+[dim]Semantic versioning: MAJOR.MINOR.PATCH[/]
+[dim]Use CLI tools to bump versions:[/]
+[dim]  python src/version.py major|minor|patch[/]"""
+        
+        self.log_widget.write(version_info)
 
     def action_quit(self) -> None:
         """Cleanly exit the application."""
