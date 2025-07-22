@@ -42,8 +42,8 @@ class Sequencer:
 
             if step_duration_frames > 0:
                 # --- 1. Schedule Note On/Off Events for the current block ---
-                all_pattern_lengths = [len(p.steps) for t in self.composition.tracks for p in t.patterns if p.steps]
-                total_loop_steps = max(all_pattern_lengths) if all_pattern_lengths else 64
+                # Use a fixed loop length of 64 steps for consistent synchronization
+                total_loop_steps = 64  # Standard pattern length
 
                 start_step = start_frame // step_duration_frames
                 end_step = end_frame // step_duration_frames
@@ -70,13 +70,14 @@ class Sequencer:
                     for track in self.composition.tracks:
                         if not track.patterns or not track.sequence: continue
                         
-                        sequence_index = (step // total_loop_steps) % len(track.sequence)
-                        pattern_index = track.sequence[sequence_index]
+                        # Use the first pattern and loop it properly
+                        pattern_index = track.sequence[0] if track.sequence else 0
                         if pattern_index >= len(track.patterns): continue
                         
                         pattern = track.patterns[pattern_index]
                         if not pattern.steps: continue
 
+                        # Each track loops its pattern independently within the global loop
                         pattern_step = current_loop_step % len(pattern.steps)
                         note_event = pattern.steps[pattern_step]
 
