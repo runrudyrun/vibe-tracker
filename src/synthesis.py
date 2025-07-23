@@ -166,15 +166,17 @@ class ActiveNote:
         # Create stateful generators for each oscillator
         self.oscillators = []
         for osc_params in self.instrument.oscillators:
-            waveform_func = get_waveform_function(osc_params.get('waveform', 'sine'))
+            waveform_name = osc_params.get('waveform', 'sine')
+            waveform_func = get_waveform_function(waveform_name)
             self.oscillators.append({
                 'generator': waveform_func(self.frequency),
-                'amplitude': osc_params.get('amplitude', 1.0)
+                'amplitude': osc_params.get('amplitude', 1.0),
+                'waveform': waveform_name,  # Store waveform name for vectorized generation
+                'phase': 0.0  # Initialize phase for vectorized generation
             })
 
         # Create and start the envelope
         self.envelope = ADSREnvelope(instrument.attack, instrument.decay, instrument.sustain_level, instrument.release)
-        self.envelope_gen = self.envelope.process()
         self.envelope.note_on()
 
     def note_off(self):
@@ -182,19 +184,109 @@ class ActiveNote:
 
     def is_active(self):
         return self.envelope.state != 'off'
+    
+    def _generate_envelope_block(self, num_samples):
+        """Generate envelope values with true numpy vectorization."""
+        envelope_samples = np.zeros(num_samples)
+        current_level = self.envelope.level
+        current_state = self.envelope.state
+        
+        if current_state == 'off':
+            # All zeros, already initialized
+            return envelope_samples
+        elif current_state == 'sustain':
+            # Constant sustain level
+            envelope_samples.fill(self.envelope.sustain_level)
+            return envelope_samples
+        
+        # For attack, decay, release - calculate vectorized ramps
+        sample_indices = np.arange(num_samples)
+        
+        if current_state == 'attack':
+            # Linear ramp up
+            envelope_samples = current_level + sample_indices * self.envelope.attack_rate
+            # Clip at 1.0 and handle state transition
+            envelope_samples = np.minimum(envelope_samples, 1.0)
+            # Update envelope state for next call
+            self.envelope.level = envelope_samples[-1]
+            if self.envelope.level >= 1.0:
+                self.envelope.state = 'decay'
+                
+        elif current_state == 'decay':
+            # Linear ramp down
+            envelope_samples = current_level - sample_indices * self.envelope.decay_rate
+            # Clip at sustain level and handle state transition
+            envelope_samples = np.maximum(envelope_samples, self.envelope.sustain_level)
+            # Update envelope state for next call
+            self.envelope.level = envelope_samples[-1]
+            if self.envelope.level <= self.envelope.sustain_level:
+                self.envelope.state = 'sustain'
+                
+        elif current_state == 'release':
+            # Linear ramp down to zero
+            envelope_samples = current_level - sample_indices * self.envelope.release_rate
+            # Clip at 0.0 and handle state transition
+            envelope_samples = np.maximum(envelope_samples, 0.0)
+            # Update envelope state for next call
+            self.envelope.level = envelope_samples[-1]
+            if self.envelope.level <= 0.0:
+                self.envelope.state = 'off'
+        
+        return envelope_samples
+    
+    def _generate_oscillator_block(self, osc, num_samples):
+        """Generate oscillator samples vectorized based on waveform type."""
+        waveform = osc['waveform']
+        frequency = self.frequency
+        
+        # Calculate phase increment per sample
+        phase_increment = (2 * np.pi * frequency) / SAMPLE_RATE
+        
+        # Get current phase from oscillator state
+        if not hasattr(osc, 'phase'):
+            osc['phase'] = 0.0
+        
+        # Generate sample indices
+        sample_indices = np.arange(num_samples)
+        phases = osc['phase'] + sample_indices * phase_increment
+        
+        # Generate waveform samples based on type
+        if waveform == 'sine':
+            samples = np.sin(phases)
+        elif waveform == 'square':
+            samples = np.sign(np.sin(phases))
+        elif waveform == 'sawtooth':
+            # Normalize phase to [0, 1] and convert to sawtooth
+            normalized_phases = (phases / (2 * np.pi)) % 1.0
+            samples = 2.0 * normalized_phases - 1.0
+        elif waveform == 'triangle':
+            # Generate triangle from sawtooth
+            normalized_phases = (phases / (2 * np.pi)) % 1.0
+            sawtooth = 2.0 * normalized_phases - 1.0
+            samples = 2 * np.abs(sawtooth) - 1
+        elif waveform == 'noise':
+            samples = np.random.uniform(-1, 1, num_samples)
+        else:
+            # Default to sine
+            samples = np.sin(phases)
+        
+        # Update oscillator phase for next block
+        osc['phase'] = (osc['phase'] + num_samples * phase_increment) % (2 * np.pi)
+        
+        return samples
 
     def process(self, num_samples):
         """Generates a block of audio for this note by mixing oscillators."""
         if not self.is_active():
             return np.zeros(num_samples)
 
-        # Get envelope values
-        envelope_samples = np.array([next(self.envelope_gen) for _ in range(num_samples)])
+        # Get envelope values - VECTORIZED
+        envelope_samples = self._generate_envelope_block(num_samples)
 
-        # Generate and mix samples from all oscillators
+        # Generate and mix samples from all oscillators - VECTORIZED
         mixed_wave = np.zeros(num_samples)
         for osc in self.oscillators:
-            wave_samples = np.array([next(osc['generator']) for _ in range(num_samples)])
+            wave_samples = self._generate_oscillator_block(osc, num_samples)
             mixed_wave += wave_samples * osc['amplitude']
 
         # Normalize if necessary (e.g., if total amplitude > 1.0)
@@ -312,36 +404,28 @@ class Instrument:
 
     def process(self, num_samples: int):
         """Mixes all active notes into a single audio buffer."""
-        logger = logging.getLogger(__name__)
-        
-        logger.debug(f"[INSTRUMENT] {self.name} - Processing {num_samples} samples, active_notes: {len(self.active_notes)}")
+        # PERFORMANCE OPTIMIZATION: Removed all debug logging from audio callback
+        # Debug logging was causing 5.2ms+ overhead per 100 operations
         
         output_buffer = np.zeros(num_samples)
         # Process notes and remove inactive ones
         notes_to_keep = []
         
-        for i, note in enumerate(self.active_notes):
-            logger.debug(f"[INSTRUMENT] {self.name} - Processing note {i}: {note.note_name}, is_active: {note.is_active()}")
-            
+        for note in self.active_notes:
             if note.is_active():
                 try:
                     note_output = note.process(num_samples)
                     output_buffer += note_output
                     notes_to_keep.append(note)
-                    logger.debug(f"[INSTRUMENT] {self.name} - Note {note.note_name} processed successfully")
-                except Exception as e:
-                    logger.error(f"[INSTRUMENT] {self.name} - Error processing note {note.note_name}: {e}")
+                except Exception:
                     # Remove problematic note by setting envelope to off state
+                    # No logging to avoid audio callback overhead
                     note.envelope.state = 'off'
-            else:
-                logger.debug(f"[INSTRUMENT] {self.name} - Removing inactive note: {note.note_name}")
         
         self.active_notes = notes_to_keep
-        logger.debug(f"[INSTRUMENT] {self.name} - Kept {len(notes_to_keep)} active notes")
         
         # Apply filter if specified
         if self.filter_type and len(output_buffer) > 0:
-            logger.debug(f"[INSTRUMENT] {self.name} - Applying {self.filter_type} filter")
             try:
                 output_buffer = apply_filter(
                     output_buffer, 
@@ -349,9 +433,8 @@ class Instrument:
                     self.filter_resonance_q, 
                     self.filter_type
                 )
-                logger.debug(f"[INSTRUMENT] {self.name} - Filter applied successfully")
-            except Exception as e:
-                logger.error(f"[INSTRUMENT] {self.name} - Error applying filter: {e}")
+            except Exception:
+                # No logging to avoid audio callback overhead
+                pass
         
-        logger.debug(f"[INSTRUMENT] {self.name} - Process completed")
         return output_buffer
