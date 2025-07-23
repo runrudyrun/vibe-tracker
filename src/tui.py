@@ -4,15 +4,15 @@ from textual.widgets import Header, Footer, Input, RichLog, Static
 import logging
 import json
 from textual.worker import Worker
+from textual import events
 
 # --- Project Imports ---
 from .music_structures import Composition, Track, Pattern, NoteEvent
 from .sequencer import Sequencer
-from .synthesis import Instrument, get_waveform_function, WAVEFORM_MAP
+from .synthesis import Instrument, get_waveform_function, WAVEFORM_MAP, SAMPLE_RATE
 from .llm_generator import LLMGenerator
 from .exporter import save_composition_to_json, render_composition_to_wav
 from .pattern_manager import PatternManager
-
 class MusicEngine:
     """Manages the musical state of the application using an LLM."""
     def __init__(self, logger):
@@ -84,6 +84,7 @@ class MusicEngine:
 class VibeTrackerApp(App):
     """A Textual app for the Vibe Tracker."""
 
+
     TITLE = "Vibe Tracker - AI Music Studio"
     SUB_TITLE = "Compose music with natural language | SPACE: Play/Pause | Ctrl-S: Save JSON | Ctrl-E: Export WAV | Ctrl-T: Save Pattern | Ctrl-L: Load Pattern | Ctrl-B: Library | Ctrl-Q: Quit"
 
@@ -99,18 +100,27 @@ class VibeTrackerApp(App):
 
     def __init__(self):
         super().__init__()
-        self.input_mode = "prompt"
+        self.music_engine = MusicEngine(logger=logging.getLogger(__name__))
+        self.input_mode = 'prompt'  # 'prompt', 'save_json', 'export_wav'
+        
+        # Initialize widgets
         self.input_widget = Input(placeholder="Enter a prompt for the AI...", id="command_input")
         self.log_widget = RichLog(wrap=True, highlight=True, markup=True)
-        self.track_display = Static("No tracks yet.", id="track_display")
+        self.track_display_widget = TrackDisplayWidget(id="track_display")
+        self.playback_widget = PlaybackVisualizationWidget(id="playback_display")
+        
+        # Timer for periodic display updates during playback
+        self.update_timer = None
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical():
+            # Playback visualization at the top
+            yield self.playback_widget
             with Horizontal(id="main_container"):
                 yield self.log_widget
                 with Vertical(id="right_panel"):
-                    yield self.track_display
+                    yield self.track_display_widget
             yield self.input_widget
         yield Footer()
 
@@ -203,12 +213,21 @@ class VibeTrackerApp(App):
         if self.music_engine.sequencer.is_playing:
             self.music_engine.sequencer.stop()
             self.log_widget.write("Playback stopped.")
+            # Stop periodic updates
+            if self.update_timer:
+                self.update_timer.stop()
+                self.update_timer = None
         else:
             if not self.music_engine.composition.tracks:
                 self.log_widget.write("There's nothing to play yet! Create a track first.")
                 return
             self.music_engine.sequencer.play()
             self.log_widget.write("Playback started...")
+            # Start periodic updates (reduced frequency to avoid audio issues)
+            self.update_timer = self.set_interval(0.25, self.update_track_display)  # Update 4 times per second
+        
+        # Update display immediately
+        self.update_track_display()
 
     def action_save_json(self) -> None:
         if not self.music_engine.composition.tracks:
@@ -244,19 +263,51 @@ class VibeTrackerApp(App):
 
     def update_track_display(self) -> None:
         """Updates the track display widget with the current list of tracks."""
-        track_display = self.query_one("#track_display", Static)
-        tracks = self.music_engine.composition.tracks
-        if not tracks:
-            track_display.update("No tracks yet.")
-            return
-
-        display_text = "[b]Current Composition:[/b]\n\n"
-        display_text += f"[b]BPM:[/b] {self.music_engine.composition.bpm}\n\n"
-        display_text += "[b]Tracks:[/b]\n"
-        for i, track in enumerate(tracks):
-            display_text += f"- Track {i}: {track.instrument_id}\n"
+        # Get current playback position from sequencer
+        current_step = getattr(self.music_engine.sequencer, '_current_frame', 0)
+        if hasattr(self.music_engine.sequencer, 'composition') and self.music_engine.sequencer.composition:
+            step_duration_frames = int(self.music_engine.sequencer.composition.get_step_duration() * SAMPLE_RATE)
+            if step_duration_frames > 0:
+                current_step = current_step // step_duration_frames
+        else:
+            current_step = 0
+            
+        # Update enhanced track display
+        self.track_display_widget.update_tracks(
+            self.music_engine.composition, 
+            self.music_engine.instruments, 
+            current_step
+        )
         
-        track_display.update(display_text)
+        # Update playback visualization with fixed loop length
+        total_steps = 64  # Standard pattern length
+        
+        self.playback_widget.update_playback(
+            current_step,
+            total_steps,
+            self.music_engine.composition.bpm,
+            self.music_engine.sequencer.is_playing
+        )
+
+    def action_show_version(self) -> None:
+        """Display version information."""
+        from .version import get_version_info, version_manager
+        
+        version = get_version()
+        major, minor, patch = get_version_info()
+        
+        version_info = f"""[bold cyan]Vibe Tracker Version Information[/]
+
+[bold]Current Version:[/] {version}
+[bold]Major:[/] {major} (Breaking changes)
+[bold]Minor:[/] {minor} (New features)
+[bold]Patch:[/] {patch} (Bug fixes)
+
+[dim]Semantic versioning: MAJOR.MINOR.PATCH[/]
+[dim]Use CLI tools to bump versions:[/]
+[dim]  python src/version.py major|minor|patch[/]"""
+        
+        self.log_widget.write(version_info)
 
     def action_save_pattern(self) -> None:
         """Save current music to library."""
@@ -550,6 +601,10 @@ class VibeTrackerApp(App):
 
     def action_quit(self) -> None:
         """Cleanly exit the application."""
+        # Stop timer if running
+        if self.update_timer:
+            self.update_timer.stop()
+            self.update_timer = None
         self.music_engine.sequencer.stop()
         self.exit()
 
