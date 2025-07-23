@@ -85,7 +85,7 @@ class VibeTrackerApp(App):
     """A Textual app for the Vibe Tracker."""
 
     TITLE = "Vibe Tracker - AI Music Studio"
-    SUB_TITLE = "Compose music with natural language | SPACE: Play/Pause | Ctrl-S: Save JSON | Ctrl-E: Export WAV | Ctrl-T: Save Pattern | Ctrl-L: Load Pattern | Ctrl-B: Library | Ctrl-Q: Quit"
+    SUB_TITLE = "Compose music with natural language | SPACE: Play/Pause | Ctrl-S: Save JSON | Ctrl-E: Export WAV | Ctrl-T: Save Pattern | Ctrl-L: Load Pattern | Ctrl-B: Library | Ctrl-X: Clear Project | Ctrl-D: Delete Track | Ctrl-Q: Quit"
 
     BINDINGS = [
         ("ctrl+q", "quit", "Quit"),
@@ -95,6 +95,8 @@ class VibeTrackerApp(App):
         ("ctrl+t", "save_pattern", "Save Pattern"),
         ("ctrl+l", "load_pattern", "Load Pattern"),
         ("ctrl+b", "pattern_library", "Pattern Library"),
+        ("ctrl+x", "clear_project", "Clear Project"),
+        ("ctrl+d", "delete_track", "Delete Track"),
     ]
 
     def __init__(self):
@@ -161,6 +163,9 @@ class VibeTrackerApp(App):
             self.set_input_mode('prompt')
         elif self.input_mode == 'load_auto':
             self.run_worker(self.worker_load_auto(value))
+            self.set_input_mode('prompt')
+        elif self.input_mode == 'delete_track':
+            self.worker_delete_track(value)
             self.set_input_mode('prompt')
 
     def set_input_mode(self, mode: str, prompt_text: str = "Enter a prompt..."):
@@ -547,6 +552,84 @@ class VibeTrackerApp(App):
         self.log_widget.write(f"[bold green]Composition '{composition_name}' loaded successfully![/bold green]")
         self.log_widget.write(f"Loaded {track_count} tracks with {len(instruments)} instruments")
         self.update_track_display()
+
+    def action_clear_project(self) -> None:
+        """Clear the entire project (all tracks and instruments)."""
+        if not self.music_engine.composition.tracks:
+            self.log_widget.write("[yellow]Project is already empty.[/yellow]")
+            return
+        
+        # Stop playback first
+        self.music_engine.sequencer.stop()
+        
+        # Clear all tracks and instruments
+        track_count = len(self.music_engine.composition.tracks)
+        self.music_engine.composition.tracks.clear()
+        self.music_engine.instruments.clear()
+        
+        # Update sequencer with empty composition
+        self.music_engine.sequencer.update_composition(
+            self.music_engine.composition, self.music_engine.instruments
+        )
+        
+        # Update display
+        self.update_track_display()
+        
+        self.log_widget.write(f"[bold green]Project cleared! Removed {track_count} tracks.[/bold green]")
+
+    def action_delete_track(self) -> None:
+        """Delete a specific track by prompting for track number."""
+        if not self.music_engine.composition.tracks:
+            self.log_widget.write("[yellow]No tracks to delete.[/yellow]")
+            return
+        
+        # Show current tracks
+        self.log_widget.write("[bold]Current tracks:[/bold]")
+        for i, track in enumerate(self.music_engine.composition.tracks):
+            self.log_widget.write(f"  {i}: {track.instrument_id}")
+        
+        # Set input mode to get track number
+        self.set_input_mode("delete_track", "Enter track number to delete (0-based):")
+
+    def worker_delete_track(self, track_input: str) -> None:
+        """Worker to delete a specific track by index."""
+        try:
+            track_index = int(track_input.strip())
+        except ValueError:
+            self.log_widget.write("[bold red]Invalid input. Please enter a number.[/bold red]")
+            return
+        
+        if track_index < 0 or track_index >= len(self.music_engine.composition.tracks):
+            self.log_widget.write(f"[bold red]Invalid track index. Please enter 0-{len(self.music_engine.composition.tracks)-1}.[/bold red]")
+            return
+        
+        # Stop playback first
+        self.music_engine.sequencer.stop()
+        
+        # Get track info before deletion
+        deleted_track = self.music_engine.composition.tracks[track_index]
+        instrument_id = deleted_track.instrument_id
+        
+        # Remove the track
+        self.music_engine.composition.tracks.pop(track_index)
+        
+        # Remove instrument if no other tracks use it
+        instrument_still_used = any(
+            track.instrument_id == instrument_id 
+            for track in self.music_engine.composition.tracks
+        )
+        if not instrument_still_used and instrument_id in self.music_engine.instruments:
+            del self.music_engine.instruments[instrument_id]
+        
+        # Update sequencer
+        self.music_engine.sequencer.update_composition(
+            self.music_engine.composition, self.music_engine.instruments
+        )
+        
+        # Update display
+        self.update_track_display()
+        
+        self.log_widget.write(f"[bold green]Track {track_index} ({instrument_id}) deleted successfully![/bold green]")
 
     def action_quit(self) -> None:
         """Cleanly exit the application."""
