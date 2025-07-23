@@ -37,24 +37,15 @@ class Sequencer:
 
     def _audio_callback(self, outdata, frames, time, status):
         """The heart of the sequencer. Called by the audio driver to get samples."""
-        if self.logger:
-            self.logger.debug(f"[AUDIO_CALLBACK] Starting callback - frames: {frames}")
+        # PERFORMANCE OPTIMIZATION: Removed all debug logging from audio callback
+        # Debug logging was causing significant overhead in real-time audio processing
         
         with self._lock:
-            if self.logger:
-                self.logger.debug(f"[AUDIO_CALLBACK] Lock acquired")
-            
             start_frame = self._current_frame
             end_frame = start_frame + frames
             step_duration_frames = int(self.composition.get_step_duration() * SAMPLE_RATE)
 
-            if self.logger:
-                self.logger.debug(f"[AUDIO_CALLBACK] step_duration_frames: {step_duration_frames}, start_frame: {start_frame}, end_frame: {end_frame}")
-
             if step_duration_frames > 0:
-                if self.logger:
-                    self.logger.debug(f"[AUDIO_CALLBACK] Processing steps...")
-                
                 # --- 1. Schedule Note On/Off Events for the current block ---
                 all_pattern_lengths = [len(p.steps) for t in self.composition.tracks for p in t.patterns if p.steps]
                 total_loop_steps = max(all_pattern_lengths) if all_pattern_lengths else 64
@@ -62,17 +53,12 @@ class Sequencer:
                 start_step = start_frame // step_duration_frames
                 end_step = end_frame // step_duration_frames
 
-                if self.logger:
-                    self.logger.debug(f"[AUDIO_CALLBACK] total_loop_steps: {total_loop_steps}, start_step: {start_step}, end_step: {end_step}")
-
                 # --- 1a. Trigger scheduled Note OFF events --- 
                 processed_events = 0
                 for i, (frame, event_id, (instrument, note_name)) in enumerate(self._note_off_events):
                     if frame < end_frame:
                         if frame >= start_frame:
                             # This event is within the current block
-                            if self.logger:
-                                self.logger.debug(f"[AUDIO_CALLBACK] Note OFF: {note_name} at frame {frame}")
                             instrument.note_off(note_name)
                         processed_events = i + 1
                     else:
@@ -85,9 +71,6 @@ class Sequencer:
 
                 # --- 1c. Trigger Note ON events for steps in this block ---
                 for step in range(start_step, end_step + 1):
-                    if self.logger:
-                        self.logger.debug(f"[AUDIO_CALLBACK] Processing step: {step}")
-                    
                     current_loop_step = step % total_loop_steps
                     for track in self.composition.tracks:
                         if not track.patterns or not track.sequence: continue
@@ -105,9 +88,6 @@ class Sequencer:
                         if note_event and note_event.note:
                             instrument = self.instruments.get(track.instrument_id)
                             if instrument:
-                                if self.logger:
-                                    self.logger.debug(f"[AUDIO_CALLBACK] Note ON: {note_event.note} velocity: {note_event.velocity}")
-                                
                                 # NOTE ON
                                 instrument.note_on(note_event.note, note_event.velocity)
                                 
@@ -120,29 +100,17 @@ class Sequencer:
                                 event_tuple = (note_off_frame, self._event_counter, (instrument, note_event.note))
                                 bisect.insort(self._note_off_events, event_tuple)
                                 self._event_counter += 1
-            else:
-                if self.logger:
-                    self.logger.warning(f"[AUDIO_CALLBACK] step_duration_frames is 0 or negative: {step_duration_frames}")
 
             # --- 2. Mix audio from all instruments ---
-            if self.logger:
-                self.logger.debug(f"[AUDIO_CALLBACK] Mixing audio from {len(self.instruments)} instruments")
-            
             output_buffer = np.zeros((frames, 1), dtype=np.float32)
             for instrument_id, instrument in self.instruments.items():
-                if self.logger:
-                    self.logger.debug(f"[AUDIO_CALLBACK] Processing instrument: {instrument_id}, active_notes: {len(instrument.active_notes)}")
-                
                 try:
                     # Instrument processes its own active notes and returns mixed audio
                     instrument_output = instrument.process(frames)
                     output_buffer += instrument_output.reshape(-1, 1)
-                    
-                    if self.logger:
-                        self.logger.debug(f"[AUDIO_CALLBACK] Instrument {instrument_id} processed successfully")
-                except Exception as e:
-                    if self.logger:
-                        self.logger.error(f"[AUDIO_CALLBACK] Error processing instrument {instrument_id}: {e}")
+                except Exception:
+                    # No logging to avoid audio callback overhead
+                    pass
 
             # --- 3. Finalize and update state ---
             # Simple limiter to prevent clipping
@@ -150,9 +118,6 @@ class Sequencer:
             
             outdata[:] = output_buffer
             self._current_frame = end_frame
-            
-            if self.logger:
-                self.logger.debug(f"[AUDIO_CALLBACK] Callback completed successfully, current_frame: {self._current_frame}")
 
     def play(self):
         """Starts the sequencer playback."""
