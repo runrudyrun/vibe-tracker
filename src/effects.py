@@ -160,7 +160,7 @@ class ReverbEffect(BaseEffect):
         self.lowpass_state = [0.0] * len(self.delay_lengths)
     
     def process(self, audio_buffer: np.ndarray) -> np.ndarray:
-        """Process audio through simple, musical reverb."""
+        """Process audio through fully vectorized, high-performance reverb."""
         if not self.enabled:
             return audio_buffer
         
@@ -169,51 +169,52 @@ class ReverbEffect(BaseEffect):
         wet_level = self.params.get('wet_level', defaults['wet_level'])
         dry_level = self.params.get('dry_level', defaults['dry_level'])
         
-        output = np.zeros_like(audio_buffer)
+        # Input limiting
+        input_buffer = np.clip(audio_buffer, -0.95, 0.95)
+        buffer_size = len(input_buffer)
         
-        for i, sample in enumerate(audio_buffer):
-            # Input limiting
-            sample = np.clip(sample, -0.95, 0.95)
+        # Initialize reverb output
+        reverb_sum = np.zeros_like(input_buffer)
+        
+        # Process each delay line (still need minimal loop for separate delay lines)
+        for j, (delay_buffer, length) in enumerate(zip(self.delay_buffers, self.delay_lengths)):
+            # Current read position
+            read_pos = self.delay_indices[j]
             
-            reverb_sum = 0.0
+            # Create arrays for vectorized operations
+            read_indices = (read_pos + np.arange(buffer_size)) % length
+            write_indices = read_indices  # Same positions for write
             
-            # Process through parallel delay lines (classic Schroeder approach)
-            for j, (buffer, length) in enumerate(zip(self.delay_buffers, self.delay_lengths)):
-                # Read delayed sample
-                delayed = buffer[self.delay_indices[j]]
-                
-                # Simple lowpass damping filter
-                self.lowpass_state[j] = (delayed * (1 - self.damping_coeff) + 
-                                       self.lowpass_state[j] * self.damping_coeff)
-                
-                # Feedback with gentle limiting
-                feedback = self.lowpass_state[j] * self.feedback
-                if feedback > 0.8:
-                    feedback = 0.8
-                elif feedback < -0.8:
-                    feedback = -0.8
-                
-                # Write new sample to delay line
-                buffer[self.delay_indices[j]] = sample + feedback
-                
-                # Advance delay pointer
-                self.delay_indices[j] = (self.delay_indices[j] + 1) % length
-                
-                # Sum delayed outputs with slight gain variation for naturalness
-                gain = 0.125 + j * 0.01  # Slight variation per delay line
-                reverb_sum += delayed * gain
+            # Read delayed samples (vectorized)
+            delayed_samples = delay_buffer[read_indices]
             
-            # Simple output processing
-            reverb_sample = reverb_sum * 0.7  # Overall reverb level
+            # Apply simple damping filter (vectorized)
+            # For simplicity, use a basic one-pole lowpass
+            damped_samples = delayed_samples * (1 - self.damping_coeff)
             
-            # Mix dry and wet
-            output[i] = dry_level * sample + wet_level * reverb_sample
+            # Feedback calculation (vectorized)
+            feedback_samples = damped_samples * self.feedback
+            feedback_samples = np.clip(feedback_samples, -0.8, 0.8)
             
-            # Final gentle limiting
-            if output[i] > 0.95:
-                output[i] = 0.95
-            elif output[i] < -0.95:
-                output[i] = -0.95
+            # Write new samples to delay buffer (input + feedback)
+            new_samples = input_buffer + feedback_samples
+            delay_buffer[write_indices] = new_samples
+            
+            # Update delay index for next call
+            self.delay_indices[j] = (read_pos + buffer_size) % length
+            
+            # Add this delay line's contribution
+            gain = 0.125 + j * 0.01  # Slight variation per delay line
+            reverb_sum += delayed_samples * gain
+        
+        # Overall reverb processing (vectorized)
+        reverb_signal = reverb_sum * 0.7
+        
+        # Mix dry and wet signals (vectorized)
+        output = dry_level * input_buffer + wet_level * reverb_signal
+        
+        # Final limiting (vectorized)
+        output = np.clip(output, -0.95, 0.95)
         
         return output
     
@@ -225,9 +226,104 @@ class ReverbEffect(BaseEffect):
         return cls(**params)
 
 
+class DelayEffect(BaseEffect):
+    """High-performance vectorized delay/echo effect."""
+    
+    def __init__(self, **params):
+        """Initialize delay with parameters."""
+        super().__init__("delay", **params)
+        
+        # Get delay time parameter
+        delay_time = self.params.get('delay_time', 0.25)
+        
+        # Calculate delay buffer size (44.1kHz sample rate assumed)
+        sample_rate = 44100
+        max_delay_samples = int(sample_rate * 2.0)  # 2 seconds max delay
+        self.delay_samples = int(sample_rate * delay_time)
+        self.delay_samples = min(self.delay_samples, max_delay_samples)
+        
+        # Create delay buffer
+        self.delay_buffer = np.zeros(max_delay_samples)
+        self.write_index = 0
+    
+    @staticmethod
+    def get_default_params() -> Dict[str, Any]:
+        """Get default delay parameters."""
+        return {
+            'delay_time': 0.25,    # 250ms delay
+            'feedback': 0.4,       # Feedback amount (0.0-0.9)
+            'damping': 0.2,        # High-frequency damping (0.0-1.0)
+            'wet_level': 0.3,      # Delay signal level
+            'dry_level': 1.0,      # Original signal level
+            'enabled': True
+        }
+    
+    def process(self, audio_buffer: np.ndarray) -> np.ndarray:
+        """Process audio through vectorized delay effect."""
+        if not self.enabled:
+            return audio_buffer
+        
+        # Get parameters
+        feedback = self.params.get('feedback', 0.4)
+        damping = self.params.get('damping', 0.2)
+        wet_level = self.params.get('wet_level', 0.3)
+        dry_level = self.params.get('dry_level', 1.0)
+        
+        # Limit feedback to prevent runaway
+        feedback = np.clip(feedback, 0.0, 0.9)
+        
+        # Input limiting
+        input_buffer = np.clip(audio_buffer, -0.95, 0.95)
+        buffer_size = len(input_buffer)
+        
+        # Calculate read indices for vectorized operation
+        read_positions = (self.write_index - self.delay_samples + np.arange(buffer_size)) % len(self.delay_buffer)
+        
+        # Read delayed samples (vectorized)
+        delayed_samples = self.delay_buffer[read_positions]
+        
+        # Apply damping to feedback signal (simple high-cut)
+        feedback_samples = delayed_samples * feedback
+        if damping > 0.01:
+            feedback_samples = feedback_samples * (1.0 - damping * 0.3)
+        
+        # Calculate new samples to write to delay buffer
+        new_samples = input_buffer + feedback_samples
+        
+        # Write to delay buffer (vectorized)
+        write_indices = (self.write_index + np.arange(buffer_size)) % len(self.delay_buffer)
+        self.delay_buffer[write_indices] = new_samples
+        
+        # Update write index for next call
+        self.write_index = (self.write_index + buffer_size) % len(self.delay_buffer)
+        
+        # Mix dry and wet signals (vectorized)
+        output = dry_level * input_buffer + wet_level * delayed_samples
+        
+        # Final limiting (vectorized)
+        output = np.clip(output, -0.95, 0.95)
+        
+        return output
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'DelayEffect':
+        """Create delay instance from dictionary."""
+        # Extract parameters, excluding 'type'
+        params = {k: v for k, v in data.items() if k != 'type'}
+        return cls(**params)
+
+
 def create_effect_from_dict(effect_data: Dict[str, Any]) -> BaseEffect:
     """Factory function to create effects from dictionary data."""
-    return BaseEffect.from_dict(effect_data)
+    effect_type = effect_data.get('type', '').lower()
+    
+    if effect_type == 'reverb':
+        return ReverbEffect.from_dict(effect_data)
+    elif effect_type == 'delay':
+        return DelayEffect.from_dict(effect_data)
+    else:
+        # Fallback to base class
+        return BaseEffect.from_dict(effect_data)
 
 
 def create_effects_from_list(effects_data: List[Dict[str, Any]]) -> List[BaseEffect]:

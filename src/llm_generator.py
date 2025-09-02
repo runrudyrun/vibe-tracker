@@ -45,6 +45,19 @@ Your task is to modify the composition based on the user's request.
         - Dramatic pad reverb: `{"type": "reverb", "room_size": 0.7, "wet_level": 0.5, "dry_level": 0.6}`
         - Snare drum reverb: `{"type": "reverb", "room_size": 0.4, "damping": 0.6, "wet_level": 0.3}`
 
+    - **Delay Effect ("delay")**:
+        - `type`: Must be `"delay"`
+        - `delay_time`: 0.01 to 2.0 - Delay time in seconds (0.125 = 1/8 note at 120 BPM, 0.25 = 1/4 note, 0.5 = 1/2 note)
+        - `feedback`: 0.0 to 0.9 - Amount of delayed signal fed back for repeating echoes (0.3 = subtle, 0.6 = prominent)
+        - `damping`: 0.0 to 1.0 - High frequency damping for natural decay (0.2 = bright, 0.5 = warm)
+        - `wet_level`: 0.0 to 1.0 - Amount of delay signal (0.2 = subtle, 0.4 = prominent)
+        - `dry_level`: 0.0 to 1.0 - Amount of original signal (usually 0.8-1.0)
+        - `enabled`: true/false - Whether the effect is active
+    - **Delay Usage Examples**:
+        - Vocal echo: `{"type": "delay", "delay_time": 0.25, "feedback": 0.3, "wet_level": 0.2}`
+        - Guitar delay: `{"type": "delay", "delay_time": 0.375, "feedback": 0.5, "damping": 0.3, "wet_level": 0.4}`
+        - Dub delay: `{"type": "delay", "delay_time": 0.5, "feedback": 0.7, "wet_level": 0.6}`
+
 You must respond with a single, valid JSON object representing the *complete, updated* composition. Do not respond with anything else.
 The JSON structure must be:
 
