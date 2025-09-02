@@ -2,6 +2,7 @@ import os
 import google.generativeai as genai
 import json
 from dotenv import load_dotenv
+from openai import OpenAI
 
 # --- Configuration ---
 load_dotenv() # Load variables from .env file
@@ -103,48 +104,175 @@ The JSON structure must be:
 """
 
 class LLMGenerator:
-    def __init__(self):
+    def __init__(self, provider="auto"):
+        self.provider = provider
+        
+        # Auto-select provider based on available credentials
+        if provider == "auto":
+            if os.getenv("HF_TOKEN"):
+                self.provider = "huggingface"
+            elif os.getenv("GOOGLE_API_KEY"):
+                self.provider = "gemini"
+            else:
+                raise ValueError("No LLM provider credentials found. Set HF_TOKEN or GOOGLE_API_KEY")
+        
+        # Initialize the selected provider
+        if self.provider == "huggingface":
+            self._init_huggingface()
+        elif self.provider == "gemini":
+            self._init_gemini()
+        else:
+            raise ValueError(f"Unknown provider: {provider}")
+    
+    def _init_huggingface(self):
+        """Initialize Hugging Face provider"""
+        hf_token = os.getenv("HF_TOKEN")
+        if not hf_token:
+            raise ValueError("HF_TOKEN not found in environment")
+        
+        self.client = OpenAI(
+            base_url="https://router.huggingface.co/v1",
+            api_key=hf_token
+        )
+        self.model_name = os.getenv("HF_MODEL", "openai/gpt-oss-20b")
+        print(f"[LLM Generator] Using Hugging Face: {self.model_name}")
+    
+    def _init_gemini(self):
+        """Initialize Gemini provider"""
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY not found in environment")
+        
+        genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel(
             model_name='gemini-2.5-flash',
             system_instruction=SYSTEM_PROMPT
         )
+        print(f"[LLM Generator] Using Gemini: gemini-2.5-flash")
 
     def generate_music_from_prompt(self, user_prompt: str, context_composition: dict = None):
         """Sends the user prompt and context to the LLM to get a modified composition."""
         
-        full_prompt = []
-        if context_composition:
-            context_json = json.dumps(context_composition, indent=2)
-            full_prompt.append(f"Here is the current composition:\n\n```json\n{context_json}\n```")
-        
-        full_prompt.append(f"User request: '{user_prompt}'")
-        
-        final_prompt_str = "\n\n".join(full_prompt)
-
+        if self.provider == "huggingface":
+            return self._generate_huggingface(user_prompt, context_composition)
+        elif self.provider == "gemini":
+            return self._generate_gemini(user_prompt, context_composition)
+        else:
+            return None, f"Unknown provider: {self.provider}"
+    
+    def _generate_huggingface(self, user_prompt: str, context_composition: dict = None):
+        """Generate using Hugging Face API"""
         try:
-            response = self.model.generate_content(final_prompt_str)
-            # Clean up the response to get only the JSON part
-            json_text = response.text.strip().replace('```json', '').replace('```', '').strip()
+            messages = [
+                {"role": "system", "content": self._get_hf_system_prompt()}
+            ]
             
-            # Parse the JSON string into a Python dictionary
+            if context_composition:
+                context_json = json.dumps(context_composition, indent=2)
+                messages.append({
+                    "role": "user",
+                    "content": f"Here is the current composition:\n\n```json\n{context_json}\n```"
+                })
+            
+            messages.append({"role": "user", "content": f"User request: '{user_prompt}'"})
+            
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=2048,
+                temperature=0.7,
+                response_format={"type": "json_object"}
+            )
+            
+            generated_text = response.choices[0].message.content
+            music_data = json.loads(generated_text)
+            return music_data, None
+            
+        except Exception as e:
+            print(f"[LLM Generator] Hugging Face Error: {e}")
+            return None, str(e)
+    
+    def _generate_gemini(self, user_prompt: str, context_composition: dict = None):
+        """Generate using Gemini API"""
+        try:
+            full_prompt = []
+            if context_composition:
+                context_json = json.dumps(context_composition, indent=2)
+                full_prompt.append(f"Here is the current composition:\n\n```json\n{context_json}\n```")
+            
+            full_prompt.append(f"User request: '{user_prompt}'")
+            final_prompt_str = "\n\n".join(full_prompt)
+
+            response = self.model.generate_content(final_prompt_str)
+            json_text = response.text.strip().replace('```json', '').replace('```', '').strip()
             music_data = json.loads(json_text)
             return music_data, None
+            
         except Exception as e:
-            print(f"[LLM Generator] Error: {e}")
+            print(f"[LLM Generator] Gemini Error: {e}")
             return None, str(e)
+    
+    def _get_hf_system_prompt(self):
+        """Get system prompt optimized for Hugging Face API"""
+        return """You are an expert AI music composer. Generate music compositions in JSON format.
+
+IMPORTANT: Respond with ONLY a valid JSON object. No explanatory text or markdown.
+
+Musical Rules:
+1. Pattern Length: All patterns must be exactly 64 steps long (0-63)
+2. Seamless Looping: Place notes near end (steps 60-63) for smooth transitions  
+3. Density: Fill patterns with musical content
+4. Note Duration: Use duration field (1 for percussive, 64 for sustained)
+
+Synthesis Guide:
+- oscillators: List of waveform objects with amplitude (sum ≈ 1.0)
+- Waveforms: 'sine', 'square', 'sawtooth', 'triangle', 'noise'
+- Filters: 'lowpass', 'highpass', 'bandpass' with cutoff_hz and resonance_q
+- Effects: reverb and delay with appropriate parameters
+
+JSON Structure:
+{
+  "bpm": <integer>,
+  "instruments": [
+    {
+      "name": "<string>",
+      "oscillators": [{"waveform": "<string>", "amplitude": <float>}],
+      "attack": <float>, "decay": <float>, "sustain_level": <float>, "release": <float>,
+      "filter_type": "<string>", "filter_cutoff_hz": <integer>, "filter_resonance_q": <float>,
+      "effects": [{"type": "reverb", "room_size": <float>, "damping": <float>, "wet_level": <float>, "dry_level": <float>, "enabled": <bool>}]
+    }
+  ],
+  "tracks": [
+    {"instrument_name": "<string>", "notes": [{"step": <integer>, "note": "<string>", "duration": <integer>}]}
+  ]
+}"""
+    
+    def get_provider_info(self):
+        """Get information about the current provider"""
+        if self.provider == "huggingface":
+            return f"Hugging Face ({self.model_name})"
+        elif self.provider == "gemini":
+            return "Google Gemini (gemini-2.5-flash)"
+        else:
+            return f"Unknown ({self.provider})"
 
 if __name__ == '__main__':
     # Example usage:
-    generator = LLMGenerator()
-    # user_input = "Create a slow, melancholic synthwave track with a simple bassline and a lead melody."
-    user_input = "a fast, aggressive techno beat with a driving kick and a noisy snare"
-    
-    print(f"Sending prompt to Gemini: '{user_input}'")
-    data, error = generator.generate_music_from_prompt(user_input)
+    try:
+        generator = LLMGenerator()
+        user_input = "a fast, aggressive techno beat with a driving kick and a noisy snare"
+        
+        print(f"Sending prompt to {generator.get_provider_info()}: '{user_input}'")
+        data, error = generator.generate_music_from_prompt(user_input)
 
-    if error:
-        print(f"An error occurred: {error}")
-    else:
-        print("\n--- Successfully received data from Gemini ---")
-        print(json.dumps(data, indent=2))
-        print("\n---------------------------------------------")
+        if error:
+            print(f"An error occurred: {error}")
+        else:
+            print(f"\n--- Successfully received data from {generator.get_provider_info()} ---")
+            print(json.dumps(data, indent=2))
+            print("\n---------------------------------------------")
+    except ValueError as e:
+        print(f"Configuration Error: {e}")
+        print("\nTo use Hugging Face: Get token from https://huggingface.co/settings/tokens")
+        print("Then set: export HF_TOKEN=your_token_here")
+        print("\nTo use Gemini: Set GOOGLE_API_KEY in your .env file")

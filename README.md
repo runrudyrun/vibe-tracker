@@ -1,16 +1,19 @@
 # Vibe Tracker - AI Music Studio
 
-Vibe Tracker is a terminal-based music creation tool that allows you to compose music in real-time using natural language commands, powered by Google's Gemini AI.
+Vibe Tracker is a terminal-based music creation tool that allows you to compose music in real-time using natural language commands, powered by multiple AI providers including GPT-OSS and Google's Gemini AI.
 
 It features a persistent, callback-based audio engine for seamless, uninterrupted playback and live updates to the composition. You can add instruments, create patterns, and modify your track on the fly without ever stopping the music.
 
 ## Features
 
 - **AI-Powered Composition**: Use natural language prompts (e.g., "add a funky bassline", "create a fast techno beat") to generate and modify music.
+- **Multiple AI Providers**: Support diferent models via Hugging Face and Google Gemini with automatic provider selection.
 - **Real-Time Updates**: The music composition is updated live based on your commands without interrupting playback.
 - **Seamless Looping**: A robust audio engine and carefully crafted AI prompts ensure patterns loop perfectly without clicks or pauses.
 - **Text-Based Interface**: A clean, minimalist terminal UI built with Textual.
 - **Extensible Synthesis**: Simple, classic synth waveforms (sine, square, saw, triangle) with ADSR envelope controls.
+- **Built-in Effects**: Instrument-level reverb effects with configurable parameters.
+- **Pattern Management**: Save and load patterns, export compositions to WAV files.
 
 ## Installation
 
@@ -49,24 +52,44 @@ Install all the required Python packages using `pip`:
 pip install -r requirements.txt
 ```
 
-### 5. Get Your Google Gemini API Key
+### 5. Configure AI Provider
 
-Vibe Tracker uses the Google Gemini API to understand your commands. The free tier is generous and perfect for this project.
+Vibe Tracker supports multiple AI providers. You need to configure at least one:
 
-1.  **Go to Google AI Studio**: Open your browser and navigate to [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey).
-2.  **Create API Key**: You may be asked to log in with your Google account. Click on **"Create API key in new project"**.
-3.  **Copy Your Key**: A new API key will be generated for you. Copy this key immediately and store it somewhere safe. This is your secret key.
+#### Option A: Hugging Face GPT-OSS (Recommended)
 
-### 6. Configure Your API Key
+1. **Get Hugging Face Token**: Go to [https://huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+2. **Create Token**: Click "Create new token" with `inference.serverless.write` permissions
+3. **Copy Token**: Save the token securely
 
-The application loads the API key from a `.env` file in the project's root directory.
+#### Option B: Google Gemini
 
-1.  Create a new file named `.env` in the root of the `vibe-tracker` directory.
-2.  Add the following line to the file, replacing `YOUR_API_KEY_HERE` with the key you just copied:
+1. **Go to Google AI Studio**: Navigate to [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+2. **Create API Key**: Click "Create API key in new project"
+3. **Copy Key**: Save the API key securely
 
-    ```
-    GOOGLE_API_KEY='YOUR_API_KEY_HERE'
-    ```
+### 6. Environment Configuration
+
+Create a `.env` file in the project root with your chosen provider:
+
+```bash
+# For Hugging Face GPT-OSS (recommended)
+HF_TOKEN=hf_your_token_here
+
+# Optional: specify model (default: openai/gpt-oss-20b)
+HF_MODEL=openai/gpt-oss-20b
+
+# For Google Gemini (fallback)
+GOOGLE_API_KEY=your_api_key_here
+
+# Optional: force specific provider (auto, huggingface, gemini)
+LLM_PROVIDER=auto
+```
+
+**Provider Selection Priority:**
+1. Hugging Face GPT-OSS (if `HF_TOKEN` is set)
+2. Google Gemini (if `GOOGLE_API_KEY` is set)
+3. Error if neither is configured
 
 ## Usage
 
@@ -82,8 +105,109 @@ The terminal interface will launch. Simply type a command into the input box at 
 
 - `a simple 4/4 kick drum`
 - `add a snare on beats 2 and 4`
-- `create a fast, aggressive techno beat`
+- `create a fast, aggressive techno beat with reverb`
 - `make the bpm 140`
-- `delete track 1`
+- `add a dreamy ambient pad with lots of reverb`
+- `create a bass line that follows the kick`
 
-Enjoy creating music with AI!
+### Keyboard Shortcuts
+
+- **Space**: Play/Pause
+- **Ctrl+S**: Save pattern
+- **Ctrl+L**: Load pattern
+- **Ctrl+E**: Export to WAV
+- **Ctrl+X**: Clear entire project
+- **Ctrl+D**: Delete track by index
+- **Ctrl+Q**: Quit application
+
+## AI Providers Comparison
+
+| Feature | Hugging Face GPT-OSS | Google Gemini |
+|---------|---------------------|---------------|
+| **Setup Time** | Instant | Instant |
+| **Cost** | Pay-per-use (~$0.005/composition) | Free tier available |
+| **Speed** | 2-15 seconds | 3-8 seconds |
+| **Quality** | Excellent for structured output | Creative and contextual |
+| **JSON Consistency** | Very reliable | Good |
+| **Music Understanding** | Good | Excellent |
+
+## Effects System
+
+Vibe Tracker includes a built-in effects system with instrument-level processing:
+
+### Reverb Effect
+- **room_size** (0.0-1.0): Controls reverb size and decay
+- **damping** (0.0-1.0): High-frequency damping for natural sound
+- **wet_level** (0.0-1.0): Reverb signal level
+- **dry_level** (0.0-1.0): Original signal level
+- **enabled** (true/false): Effect on/off switch
+
+### Usage Examples
+- "create a pad with cathedral reverb"
+- "add a drum with tight room reverb"
+- "make a dreamy ambient texture with lots of reverb"
+
+## Performance Optimization
+
+Vibe Tracker is optimized for real-time audio performance:
+- **Vectorized Audio Processing**: 5-8x faster sample generation
+- **Minimal Logging**: No debug output in audio callbacks
+- **Efficient Effects**: <2ms processing time per buffer
+- **Memory Management**: Reused buffers, minimal allocations
+
+## Troubleshooting
+
+### Audio Issues
+- **No sound**: Check PortAudio installation and audio device
+- **Crackling/dropouts**: Increase buffer size or reduce CPU load
+- **High latency**: Use ASIO drivers on Windows, lower buffer size
+
+### AI Provider Issues
+- **Authentication errors**: Verify API tokens in `.env` file
+- **Rate limits**: Wait or upgrade to paid tier
+- **Model not found**: Check model name and provider availability
+- **Timeout errors**: Try different provider or simpler prompts
+
+### General Issues
+- **Import errors**: Ensure all dependencies installed with `pip install -r requirements.txt`
+- **Permission errors**: Check file permissions for patterns directory
+- **Memory issues**: Close other applications, use smaller compositions
+
+## Development
+
+### Project Structure
+```
+vibe-tracker/
+├── src/
+│   ├── tui.py              # Terminal user interface
+│   ├── llm_generator.py    # AI provider integration
+│   ├── synthesis.py        # Audio synthesis engine
+│   ├── sequencer.py        # Real-time audio sequencer
+│   ├── effects.py          # Audio effects system
+│   └── ...
+├── tests/                  # Test suites
+├── patterns/               # Saved patterns
+├── docker/                 # Docker configurations
+└── scripts/                # Setup and utility scripts
+```
+
+### Running Tests
+```bash
+# Test Hugging Face integration
+python tests/test_huggingface_integration.py
+
+# Test effects system
+python tests/test_effects_integration.py
+
+# Test audio performance
+python tests/debug_multitrack.py
+```
+
+### Contributing
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Ensure all tests pass
+5. Submit a pull request
+
+Enjoy creating music with AI! 🎵
