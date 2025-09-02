@@ -328,7 +328,7 @@ def apply_filter(signal, cutoff_hz, resonance_q, filter_type='lowpass', order=2)
 
 class Instrument:
     """Manages and synthesizes sound for multiple active notes using multiple oscillators."""
-    def __init__(self, name="default", oscillators=None, attack=0.01, decay=0.1, sustain_level=0.7, release=0.2, filter_type=None, filter_cutoff_hz=20000, filter_resonance_q=0.707):
+    def __init__(self, name="default", oscillators=None, attack=0.01, decay=0.1, sustain_level=0.7, release=0.2, filter_type=None, filter_cutoff_hz=20000, filter_resonance_q=0.707, effects=None):
         self.name = name
         # Default to a single sine wave oscillator for backward compatibility
         if oscillators is None:
@@ -346,11 +346,21 @@ class Instrument:
         self.filter_cutoff_hz = filter_cutoff_hz
         self.filter_resonance_q = filter_resonance_q
 
+        # Effects support for LLM-driven workflow
+        self.effects = []
+        if effects:
+            # Import here to avoid circular imports
+            try:
+                from .effects import create_effects_from_list
+            except ImportError:
+                from effects import create_effects_from_list
+            self.effects = create_effects_from_list(effects)
+
         self.active_notes = []
 
     def to_dict(self):
         """Serializes the instrument to a dictionary."""
-        return {
+        result = {
             'name': self.name,
             'oscillators': self.oscillators,
             'attack': self.attack,
@@ -361,17 +371,27 @@ class Instrument:
             'filter_cutoff_hz': self.filter_cutoff_hz,
             'filter_resonance_q': self.filter_resonance_q
         }
+        
+        # Add effects if any exist
+        if self.effects:
+            result['effects'] = [effect.to_dict() for effect in self.effects]
+        
+        return result
 
     @classmethod
     def from_dict(cls, data):
         """Creates an Instrument object from a dictionary.
-           Supports both old ('waveform') and new ('oscillators') formats."""
+           Supports both old ('waveform') and new ('oscillators') formats.
+           Now also supports effects from LLM-generated data."""
         
         oscillators = data.get('oscillators')
         # Backward compatibility: if 'oscillators' is missing, check for 'waveform'
         if oscillators is None:
             waveform_name = data.get('waveform', 'sine')
             oscillators = [{'waveform': waveform_name, 'amplitude': 1.0}]
+        
+        # Extract effects data for LLM compatibility
+        effects_data = data.get('effects', [])
             
         return cls(
             name=data.get('name', 'default'),
@@ -382,7 +402,8 @@ class Instrument:
             release=data.get('release', 0.2),
             filter_type=data.get('filter_type'),
             filter_cutoff_hz=data.get('filter_cutoff_hz', 20000),
-            filter_resonance_q=data.get('filter_resonance_q', 0.707)
+            filter_resonance_q=data.get('filter_resonance_q', 0.707),
+            effects=effects_data
         )
 
     def note_on(self, note_name: str, velocity: float = 1.0):
@@ -436,5 +457,15 @@ class Instrument:
             except Exception:
                 # No logging to avoid audio callback overhead
                 pass
-        
+    
+        # Apply effects chain if any exist
+        if self.effects and len(output_buffer) > 0:
+            for effect in self.effects:
+                try:
+                    output_buffer = effect.process(output_buffer)
+                except Exception:
+                    # No logging to avoid audio callback overhead
+                    # Skip problematic effect and continue
+                    pass
+    
         return output_buffer
