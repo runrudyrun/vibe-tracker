@@ -1,12 +1,7 @@
 import os
 import google.generativeai as genai
 import json
-from dotenv import load_dotenv
 from openai import OpenAI
-
-# --- Configuration ---
-load_dotenv() # Load variables from .env file
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 # --- System Prompt ---
 SYSTEM_PROMPT = """You are an expert AI music composer. 
@@ -106,9 +101,16 @@ The JSON structure must be:
 class LLMGenerator:
     def __init__(self, provider="auto"):
         self.provider = provider
+        self.client = None
+        self.model = None
+        self.model_name = None
         
-        # Auto-select provider based on available credentials
-        if provider == "auto":
+        # Check for explicit provider override first
+        llm_provider_override = os.getenv("LLM_PROVIDER")
+        if llm_provider_override:
+            self.provider = llm_provider_override.lower()
+        elif provider == "auto":
+            # Auto-select provider based on available credentials
             if os.getenv("HF_TOKEN"):
                 self.provider = "huggingface"
             elif os.getenv("GOOGLE_API_KEY"):
@@ -122,7 +124,7 @@ class LLMGenerator:
         elif self.provider == "gemini":
             self._init_gemini()
         else:
-            raise ValueError(f"Unknown provider: {provider}")
+            raise ValueError(f"Unknown provider: {self.provider}")
     
     def _init_huggingface(self):
         """Initialize Hugging Face provider"""
@@ -144,24 +146,29 @@ class LLMGenerator:
             raise ValueError("GOOGLE_API_KEY not found in environment")
         
         genai.configure(api_key=api_key)
+        self.model_name = os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
         self.model = genai.GenerativeModel(
-            model_name='gemini-2.5-flash',
+            model_name=self.model_name,
             system_instruction=SYSTEM_PROMPT
         )
-        print(f"[LLM Generator] Using Gemini: gemini-2.5-flash")
+        print(f"[LLM Generator] Using Gemini: {self.model_name}")
 
     def generate_music_from_prompt(self, user_prompt: str, context_composition: dict = None):
-        """Sends the user prompt and context to the LLM to get a modified composition."""
-        
+        """Generate music data from a user prompt with optional context
+        Returns: (music_data, error, raw_response)
+        """
         if self.provider == "huggingface":
             return self._generate_huggingface(user_prompt, context_composition)
         elif self.provider == "gemini":
             return self._generate_gemini(user_prompt, context_composition)
         else:
-            return None, f"Unknown provider: {self.provider}"
+            return None, f"Unknown provider: {self.provider}", None
     
     def _generate_huggingface(self, user_prompt: str, context_composition: dict = None):
-        """Generate using Hugging Face API"""
+        """Generate using Hugging Face API
+        Returns: (music_data, error, raw_response)
+        """
+        raw_response = None
         try:
             messages = [
                 {"role": "system", "content": self._get_hf_system_prompt()}
@@ -179,21 +186,100 @@ class LLMGenerator:
             response = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=messages,
-                max_tokens=2048,
+                max_tokens=4096,  # Increased for complex compositions
                 temperature=0.7,
                 response_format={"type": "json_object"}
             )
             
-            generated_text = response.choices[0].message.content
-            music_data = json.loads(generated_text)
-            return music_data, None
+            if not response.choices:
+                error_msg = "HF API returned no choices"
+                print(f"[LLM Generator] {error_msg}")
+                return None, error_msg, None
+            
+            raw_response = response.choices[0].message.content
+            
+            if raw_response is None:
+                error_msg = "HF API returned None content"
+                print(f"[LLM Generator] {error_msg}")
+                return None, error_msg, None
+            
+            try:
+                music_data = json.loads(raw_response)
+                
+                # Fix HF API issue: remove extra "type" field if present
+                if "type" in music_data and music_data["type"] == "object":
+                    music_data.pop("type")
+                
+                return music_data, None, raw_response
+            except json.JSONDecodeError as json_err:
+                # Try to fix truncated JSON by detecting incomplete structure
+                if "Expecting value" in str(json_err) or "Expecting" in str(json_err):
+                    # Find the last complete object/array and truncate there
+                    fixed_json = self._fix_truncated_json(raw_response)
+                    if fixed_json:
+                        try:
+                            music_data = json.loads(fixed_json)
+                            if "type" in music_data and music_data["type"] == "object":
+                                music_data.pop("type")
+                            return music_data, None, raw_response
+                        except json.JSONDecodeError:
+                            pass
+                
+                error_msg = f"JSON parsing failed: {json_err}"
+                print(f"[LLM Generator] {error_msg}")
+                return None, error_msg, raw_response
             
         except Exception as e:
-            print(f"[LLM Generator] Hugging Face Error: {e}")
-            return None, str(e)
+            error_msg = str(e)
+            print(f"[LLM Generator] Hugging Face Error: {error_msg}")
+            return None, error_msg, raw_response
+    
+    def _fix_truncated_json(self, raw_response: str) -> str:
+        """Try to fix truncated JSON by finding the last complete structure"""
+        try:
+            # Find the last complete closing brace for the main object
+            lines = raw_response.split('\n')
+            
+            # Work backwards to find a valid truncation point
+            for i in range(len(lines) - 1, -1, -1):
+                truncated = '\n'.join(lines[:i])
+                
+                # Count braces and brackets to see if we can close them
+                open_braces = truncated.count('{')
+                close_braces = truncated.count('}')
+                open_brackets = truncated.count('[')
+                close_brackets = truncated.count(']')
+                
+                # If we have more opens than closes, try to close them
+                if open_braces > close_braces or open_brackets > close_brackets:
+                    fixed = truncated
+                    
+                    # Close any open arrays first
+                    while open_brackets > close_brackets:
+                        fixed += '\n]'
+                        close_brackets += 1
+                    
+                    # Close any open objects
+                    while open_braces > close_braces:
+                        fixed += '\n}'
+                        close_braces += 1
+                    
+                    # Test if this creates valid JSON
+                    try:
+                        json.loads(fixed)
+                        return fixed
+                    except json.JSONDecodeError:
+                        continue
+            
+            return None
+        except Exception:
+            return None
     
     def _generate_gemini(self, user_prompt: str, context_composition: dict = None):
-        """Generate using Gemini API"""
+        """Generate using Gemini API
+        Returns: (music_data, error, raw_response)
+        """
+        raw_response = None
         try:
             full_prompt = []
             if context_composition:
@@ -204,13 +290,21 @@ class LLMGenerator:
             final_prompt_str = "\n\n".join(full_prompt)
 
             response = self.model.generate_content(final_prompt_str)
-            json_text = response.text.strip().replace('```json', '').replace('```', '').strip()
-            music_data = json.loads(json_text)
-            return music_data, None
+            raw_response = response.text
+            
+            try:
+                json_text = raw_response.strip().replace('```json', '').replace('```', '').strip()
+                music_data = json.loads(json_text)
+                return music_data, None, raw_response
+            except json.JSONDecodeError as json_err:
+                error_msg = f"JSON parsing failed: {json_err}"
+                print(f"[LLM Generator] {error_msg}")
+                return None, error_msg, raw_response
             
         except Exception as e:
-            print(f"[LLM Generator] Gemini Error: {e}")
-            return None, str(e)
+            error_msg = str(e)
+            print(f"[LLM Generator] Gemini Error: {error_msg}")
+            return None, error_msg, raw_response
     
     def _get_hf_system_prompt(self):
         """Get system prompt optimized for Hugging Face API"""

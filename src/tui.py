@@ -1,8 +1,11 @@
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, Horizontal
-from textual.widgets import Header, Footer, Input, RichLog, Static
+from textual.widgets import Header, Footer, Input, RichLog, Static, Button
+from textual.screen import ModalScreen
 import logging
 import json
+import os
+from pathlib import Path
 from textual.worker import Worker
 
 # --- Project Imports ---
@@ -12,6 +15,40 @@ from .synthesis import Instrument, get_waveform_function, WAVEFORM_MAP
 from .llm_generator import LLMGenerator
 from .exporter import save_composition_to_json, render_composition_to_wav
 from .pattern_manager import PatternManager
+
+class RawResponseModal(ModalScreen):
+    """Modal screen to display raw AI responses and parsing details."""
+    
+    def __init__(self, raw_response: str, parsed_data: dict = None, error: str = None):
+        super().__init__()
+        self.raw_response = raw_response
+        self.parsed_data = parsed_data
+        self.error = error
+    
+    def compose(self) -> ComposeResult:
+        with Vertical(id="raw_response_modal"):
+            yield Static("[bold]Raw AI Response:[/bold]", classes="modal-title")
+            yield RichLog(wrap=True, highlight=True, markup=True, id="raw_log")
+            if self.error:
+                yield Static(f"[bold red]Parsing Error:[/bold red] {self.error}", classes="error-text")
+            yield Button("Close", variant="primary", id="close_modal")
+    
+    def on_mount(self) -> None:
+        raw_log = self.query_one("#raw_log", RichLog)
+        raw_log.write("[bold cyan]Raw Response:[/bold cyan]")
+        raw_log.write(self.raw_response)
+        
+        if self.parsed_data:
+            raw_log.write("\n[bold green]Parsed JSON:[/bold green]")
+            raw_log.write(json.dumps(self.parsed_data, indent=2))
+        
+        if self.error:
+            raw_log.write(f"\n[bold red]Error Details:[/bold red]")
+            raw_log.write(self.error)
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "close_modal":
+            self.dismiss()
 
 class MusicEngine:
     """Manages the musical state of the application using an LLM."""
@@ -82,6 +119,38 @@ class MusicEngine:
             return f"Error processing AI response: {e}"
 
 class VibeTrackerApp(App):
+    CSS = """
+    #raw_response_modal {
+        width: 80%;
+        height: 80%;
+        margin: 2 4;
+        padding: 1;
+        border: solid $primary;
+        background: $surface;
+    }
+    
+    .modal-title {
+        text-align: center;
+        margin-bottom: 1;
+    }
+    
+    .error-text {
+        margin: 1 0;
+        padding: 1;
+        background: $error 20%;
+        border-left: solid red;
+    }
+    
+    #raw_log {
+        height: 1fr;
+        margin-bottom: 1;
+        border: solid $accent;
+    }
+    
+    #close_modal {
+        width: 100%;
+    }
+    """
     """A Textual app for the Vibe Tracker."""
 
     TITLE = "Vibe Tracker - AI Music Studio"
@@ -97,6 +166,7 @@ class VibeTrackerApp(App):
         ("ctrl+b", "pattern_library", "Pattern Library"),
         ("ctrl+x", "clear_project", "Clear Project"),
         ("ctrl+d", "delete_track", "Delete Track"),
+        ("ctrl+r", "toggle_raw_responses", "Toggle Raw Responses"),
     ]
 
     def __init__(self):
@@ -105,6 +175,10 @@ class VibeTrackerApp(App):
         self.input_widget = Input(placeholder="Enter a prompt for the AI...", id="command_input")
         self.log_widget = RichLog(wrap=True, highlight=True, markup=True)
         self.track_display = Static("No tracks yet.", id="track_display")
+        self.show_raw_responses = False  # Toggle for showing raw responses
+        self.last_raw_response = None
+        self.last_parsed_data = None
+        self.last_parsing_error = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -113,11 +187,30 @@ class VibeTrackerApp(App):
                 yield self.log_widget
                 with Vertical(id="right_panel"):
                     yield self.track_display
+                    yield Button("Show Raw Response", variant="default", id="show_raw_btn", disabled=True)
+                    yield Button("Auto-Show: OFF", variant="default", id="toggle_auto_raw")
             yield self.input_widget
         yield Footer()
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses."""
+        if event.button.id == "show_raw_btn":
+            if self.last_raw_response:
+                self.push_screen(RawResponseModal(
+                    self.last_raw_response, 
+                    self.last_parsed_data, 
+                    self.last_parsing_error
+                ))
+            else:
+                self.log_widget.write("[yellow]No raw response available yet. Generate some music first![/yellow]")
+        elif event.button.id == "toggle_auto_raw":
+            self.action_toggle_raw_responses()
 
     def on_mount(self) -> None:
         """Called when the app is mounted."""
+        # Load .env file
+        self._load_env_file()
+        
         # --- Setup Logging ---
         self.logger = logging.getLogger(__name__)
         handler = logging.FileHandler("vibe_tracker.log", mode='w')
@@ -130,6 +223,18 @@ class VibeTrackerApp(App):
         self.music_engine = MusicEngine(self.logger)
         self.log_widget.write("Welcome! I'm your AI music assistant. Give me a command to start.")
         self.query_one("#command_input").focus()
+    
+    def _load_env_file(self):
+        """Load environment variables from .env file"""
+        env_file = Path(__file__).parent.parent / '.env'
+        if env_file.exists():
+            with open(env_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, value = line.split('=', 1)
+                        os.environ[key] = value.strip('"\'')
+            print(f"[TUI] Loaded .env file with {len([l for l in open(env_file) if '=' in l and not l.startswith('#')])} variables")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         value = event.value
@@ -173,35 +278,62 @@ class VibeTrackerApp(App):
         self.input_widget.placeholder = prompt_text
         self.input_widget.focus()
 
-    async def generate_music(self, prompt: str) -> None:
-        """Worker function to call the LLM and process the response, now context-aware and non-blocking."""
-        # 1. Get the current state of the music as a dictionary.
-        current_composition_dict = self.music_engine.get_composition_as_dict()
-
-        # Log the context being sent to the LLM
-        if current_composition_dict:
-            self.logger.info(f"\n--- CONTEXT SENT TO LLM ---\n{json.dumps(current_composition_dict, indent=2)}\n---------------------------")
-        else:
-            self.logger.info("--- CONTEXT SENT TO LLM: Empty composition ---")
-
-        # 2. Call the LLM with the user prompt and the current composition as context.
-        music_data, error = self.music_engine.llm_generator.generate_music_from_prompt(
-            prompt,
-            context_composition=current_composition_dict
-        )
-
-        # 3. Process the response.
-        if error:
-            self.log_widget.write(f"AI: Sorry, an error occurred: {error}")
-            self.logger.error(f"LLM Error: {error}")
-        else:
-            # Log the data received from the LLM
-            self.logger.info(f"\n--- DATA RECEIVED FROM LLM ---\n{json.dumps(music_data, indent=2)}\n------------------------------")
+    async def generate_music(self, prompt: str):
+        """Worker method to generate music from a prompt."""
+        try:
+            # Get the current composition as context for the LLM
+            current_composition = self.music_engine.get_composition_as_dict()
+            
+            # Generate new music data using the LLM
+            music_data, error, raw_response = self.music_engine.llm_generator.generate_music_from_prompt(
+                prompt, current_composition
+            )
+            
+            # Store raw response and parsing results for debugging
+            self.last_raw_response = raw_response
+            self.last_parsed_data = music_data
+            self.last_parsing_error = error
+            
+            # Update button text based on availability of raw response
+            raw_btn = self.query_one("#show_raw_btn", Button)
+            if raw_response:
+                raw_btn.label = "Show Raw Response" if not error else "Show Raw Response (Error)"
+                raw_btn.disabled = False
+            else:
+                raw_btn.disabled = True
+            
+            if error:
+                self.log_widget.write(f"[bold red]AI Error:[/] {error}")
+                if self.show_raw_responses and raw_response:
+                    self.push_screen(RawResponseModal(raw_response, music_data, error))
+                return
             
             # The `update_composition_from_llm` method will atomically update the live sequencer.
             response_message = self.music_engine.update_composition_from_llm(music_data)
             self.log_widget.write(f"AI: {response_message}")
+            
+            # Auto-show raw response if enabled
+            if self.show_raw_responses and raw_response:
+                self.push_screen(RawResponseModal(raw_response, music_data, error))
+                
             self.update_track_display()
+        except Exception as e:
+            self.log_widget.write(f"[bold red]Unexpected error:[/] {str(e)}")
+            self.logger.error(f"Generate music error: {e}")
+    
+    def action_toggle_raw_responses(self) -> None:
+        """Toggle automatic showing of raw AI responses."""
+        self.show_raw_responses = not self.show_raw_responses
+        auto_btn = self.query_one("#toggle_auto_raw", Button)
+        
+        if self.show_raw_responses:
+            auto_btn.label = "Auto-Show: ON"
+            auto_btn.variant = "success"
+            self.log_widget.write("[green]Raw responses will now auto-show after each generation[/green]")
+        else:
+            auto_btn.label = "Auto-Show: OFF"
+            auto_btn.variant = "default"
+            self.log_widget.write("[yellow]Raw responses auto-show disabled[/yellow]")
 
     def action_toggle_play(self) -> None:
         """Toggle music playback."""
