@@ -136,6 +136,15 @@ The terminal interface will launch. Simply type a command into the input box at 
 - **Ctrl+D**: Delete track by index
 - **Ctrl+Q**: Quit application
 
+## Tutorials
+
+### [Dub Music Production Guide](docs/dub-music-tutorial.md)
+Learn to create music with step-by-step prompts on the dub music example Covers:
+- Foundation rhythms (bass + kick)
+- Characteristic dub snare with heavy reverb
+- Atmospheric pads and minimal percussion
+- Lead elements and classic dub techniques
+
 ## AI Providers Comparison
 
 | Feature | Hugging Face GPT-OSS | OpenRouter | Google Gemini |
