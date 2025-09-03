@@ -4,3 +4,5 @@ textual
 google-generativeai
 python-dotenv
 scipy
+requests
+openai
