@@ -111,15 +111,19 @@ class LLMGenerator:
             self.provider = llm_provider_override.lower()
         elif provider == "auto":
             # Auto-select provider based on available credentials
-            if os.getenv("HF_TOKEN"):
+            if os.getenv("OPENROUTER_API_KEY"):
+                self.provider = "openrouter"
+            elif os.getenv("HF_TOKEN"):
                 self.provider = "huggingface"
             elif os.getenv("GOOGLE_API_KEY"):
                 self.provider = "gemini"
             else:
-                raise ValueError("No LLM provider credentials found. Set HF_TOKEN or GOOGLE_API_KEY")
-        
+                raise ValueError("No LLM provider credentials found. Set OPENROUTER_API_KEY, HF_TOKEN, or GOOGLE_API_KEY")
+
         # Initialize the selected provider
-        if self.provider == "huggingface":
+        if self.provider == "openrouter":
+            self._init_openrouter()
+        elif self.provider == "huggingface":
             self._init_huggingface()
         elif self.provider == "gemini":
             self._init_gemini()
@@ -153,11 +157,26 @@ class LLMGenerator:
         )
         print(f"[LLM Generator] Using Gemini: {self.model_name}")
 
+    def _init_openrouter(self):
+        """Initialize OpenRouter provider"""
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY not found in environment")
+
+        self.client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key
+        )
+        self.model_name = os.getenv("OPENROUTER_MODEL", "gryphe/mythomax-l2-13b")
+        print(f"[LLM Generator] Using OpenRouter: {self.model_name}")
+
     def generate_music_from_prompt(self, user_prompt: str, context_composition: dict = None):
         """Generate music data from a user prompt with optional context
         Returns: (music_data, error, raw_response)
         """
-        if self.provider == "huggingface":
+        if self.provider == "openrouter":
+            return self._generate_openrouter(user_prompt, context_composition)
+        elif self.provider == "huggingface":
             return self._generate_huggingface(user_prompt, context_composition)
         elif self.provider == "gemini":
             return self._generate_gemini(user_prompt, context_composition)
@@ -232,6 +251,58 @@ class LLMGenerator:
         except Exception as e:
             error_msg = str(e)
             print(f"[LLM Generator] Hugging Face Error: {error_msg}")
+            return None, error_msg, raw_response
+
+    def _generate_openrouter(self, user_prompt: str, context_composition: dict = None):
+        """Generate using OpenRouter API
+        Returns: (music_data, error, raw_response)
+        """
+        raw_response = None
+        try:
+            messages = [
+                {"role": "system", "content": self._get_hf_system_prompt()} # Reusing HF prompt as it's generic
+            ]
+
+            if context_composition:
+                context_json = json.dumps(context_composition, indent=2)
+                messages.append({
+                    "role": "user",
+                    "content": f"Here is the current composition:\n\n```json\n{context_json}\n```"
+                })
+
+            messages.append({"role": "user", "content": f"User request: '{user_prompt}'"})
+
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=4096,
+                temperature=0.7,
+                response_format={"type": "json_object"}
+            )
+
+            if not response.choices:
+                error_msg = "OpenRouter API returned no choices"
+                print(f"[LLM Generator] {error_msg}")
+                return None, error_msg, None
+
+            raw_response = response.choices[0].message.content
+
+            if raw_response is None:
+                error_msg = "OpenRouter API returned None content"
+                print(f"[LLM Generator] {error_msg}")
+                return None, error_msg, None
+
+            try:
+                music_data = json.loads(raw_response)
+                return music_data, None, raw_response
+            except json.JSONDecodeError as json_err:
+                error_msg = f"JSON parsing failed: {json_err}"
+                print(f"[LLM Generator] {error_msg}")
+                return None, error_msg, raw_response
+
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[LLM Generator] OpenRouter Error: {error_msg}")
             return None, error_msg, raw_response
     
     def _fix_truncated_json(self, raw_response: str) -> str:
@@ -315,7 +386,7 @@ IMPORTANT: Respond with ONLY a valid JSON object. No explanatory text or markdow
 Musical Rules:
 1. Pattern Length: All patterns must be exactly 64 steps long (0-63)
 2. Seamless Looping: Place notes near end (steps 60-63) for smooth transitions  
-3. Density: Fill patterns with musical content
+3. Density: Fill patterns with musical content, do not create a sound wall, do not use too many notes.
 4. Note Duration: Use duration field (1 for percussive, 64 for sustained)
 
 Synthesis Guide:
@@ -343,7 +414,9 @@ JSON Structure:
     
     def get_provider_info(self):
         """Get information about the current provider"""
-        if self.provider == "huggingface":
+        if self.provider == "openrouter":
+            return f"OpenRouter ({self.model_name})"
+        elif self.provider == "huggingface":
             return f"Hugging Face ({self.model_name})"
         elif self.provider == "gemini":
             return "Google Gemini (gemini-2.5-flash)"
@@ -367,6 +440,9 @@ if __name__ == '__main__':
             print("\n---------------------------------------------")
     except ValueError as e:
         print(f"Configuration Error: {e}")
+        print("\nTo use OpenRouter: Get key from https://openrouter.ai/keys")
+        print("Then set: export OPENROUTER_API_KEY=your_key_here")
+        print("You can also set OPENROUTER_MODEL to your model of choice.")
         print("\nTo use Hugging Face: Get token from https://huggingface.co/settings/tokens")
         print("Then set: export HF_TOKEN=your_token_here")
         print("\nTo use Gemini: Set GOOGLE_API_KEY in your .env file")
