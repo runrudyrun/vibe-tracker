@@ -7,7 +7,7 @@ It features a persistent, callback-based audio engine for seamless, uninterrupte
 ## Features
 
 - **AI-Powered Composition**: Use natural language prompts (e.g., "add a funky bassline", "create a fast techno beat") to generate and modify music.
-- **Multiple AI Providers**: Support diferent models via Hugging Face and Google Gemini with automatic provider selection.
+- **Multiple AI Providers**: Support different models via Hugging Face, OpenRouter, and Google Gemini with automatic provider selection.
 - **Real-Time Updates**: The music composition is updated live based on your commands without interrupting playback.
 - **Seamless Looping**: A robust audio engine and carefully crafted AI prompts ensure patterns loop perfectly without clicks or pauses.
 - **Text-Based Interface**: A clean, minimalist terminal UI built with Textual.
@@ -62,7 +62,14 @@ Vibe Tracker supports multiple AI providers. You need to configure at least one:
 2. **Create Token**: Click "Create new token" with `inference.serverless.write` permissions
 3. **Copy Token**: Save the token securely
 
-#### Option B: Google Gemini
+#### Option B: OpenRouter (Flexible Model Access)
+
+1. **Get OpenRouter API Key**: Go to [https://openrouter.ai/keys](https://openrouter.ai/keys)
+2. **Create API Key**: Click "Create Key" and copy the key
+3. **Choose Model**: Browse available models at [https://openrouter.ai/models](https://openrouter.ai/models)
+4. **Optional - Provider Routing**: For consistent performance, choose a specific provider from [https://openrouter.ai/openai/gpt-oss-120b/providers](https://openrouter.ai/openai/gpt-oss-120b/providers)
+
+#### Option C: Google Gemini
 
 1. **Go to Google AI Studio**: Navigate to [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
 2. **Create API Key**: Click "Create API key in new project"
@@ -73,23 +80,32 @@ Vibe Tracker supports multiple AI providers. You need to configure at least one:
 Create a `.env` file in the project root with your chosen provider:
 
 ```bash
-# For Hugging Face GPT-OSS (recommended)
+LLM_PROVIDER=you_preferred_provider_here # auto, huggingface, openrouter, gemini
+
+# For Hugging Face
 HF_TOKEN=hf_your_token_here
 
 # Optional: specify model (default: openai/gpt-oss-20b)
 HF_MODEL=openai/gpt-oss-20b
 
-# For Google Gemini (fallback)
-GOOGLE_API_KEY=your_api_key_here
+# For OpenRouter (fallback)
+OPENROUTER_API_KEY=your_api_key_here
+OPENROUTER_MODEL=openai/gpt-oss-120b
+OPENROUTER_PROVIDER=wandb
 
-# Optional: force specific provider (auto, huggingface, gemini)
+# For Google Gemini (generous free tier)
+GOOGLE_API_KEY=your_api_key_here
+GOOGLE_MODEL=gemini-2.5-flash
+
+# Optional: force specific provider (auto, huggingface, openrouter, gemini)
 LLM_PROVIDER=auto
 ```
 
 **Provider Selection Priority:**
 1. Hugging Face GPT-OSS (if `HF_TOKEN` is set)
-2. Google Gemini (if `GOOGLE_API_KEY` is set)
-3. Error if neither is configured
+2. OpenRouter (if `OPENROUTER_API_KEY` is set)
+3. Google Gemini (if `GOOGLE_API_KEY` is set)
+4. Error if neither is configured
 
 ## Usage
 
@@ -122,14 +138,14 @@ The terminal interface will launch. Simply type a command into the input box at 
 
 ## AI Providers Comparison
 
-| Feature | Hugging Face GPT-OSS | Google Gemini |
-|---------|---------------------|---------------|
-| **Setup Time** | Instant | Instant |
-| **Cost** | Pay-per-use (~$0.005/composition) | Free tier available |
-| **Speed** | 2-15 seconds | 3-8 seconds |
-| **Quality** | Excellent for structured output | Creative and contextual |
-| **JSON Consistency** | Very reliable | Good |
-| **Music Understanding** | Good | Excellent |
+| Feature | Hugging Face GPT-OSS | OpenRouter | Google Gemini |
+|---------|---------------------|------------|---------------|
+| **Setup Time** | Instant | Instant | Instant |
+| **Cost** | Pay-per-use (~$0.005/composition) | Flexible pricing | Free tier available |
+| **Speed** | 2-15 seconds | 3-8 seconds | 3-8 seconds |
+| **Quality** | Excellent for structured output | Excellent for flexible model access | Creative and contextual |
+| **JSON Consistency** | Very reliable | Good | Good |
+| **Music Understanding** | Good | Excellent | Excellent |
 
 ## Effects System
 
