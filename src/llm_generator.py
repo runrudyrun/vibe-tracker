@@ -126,10 +126,13 @@ class LLMGenerator:
                 context_json = json.dumps(context_composition, indent=2)
                 messages.append({
                     "role": "user",
-                    "content": f"Here is the current composition:\n\n```json\n{context_json}\n```"
+                    "content": f"""Here is the current composition:\n\n```json\n{context_json}\n```\n\nUser request: '{user_prompt}'"""
                 })
-            
-            messages.append({"role": "user", "content": f"User request: '{user_prompt}'"})
+            else:
+                messages.append({
+                    "role": "user",
+                    "content": f"User request: '{user_prompt}'"
+                })
             
             response = self.client.chat.completions.create(
                 model=self.model_name,
@@ -196,10 +199,13 @@ class LLMGenerator:
                 context_json = json.dumps(context_composition, indent=2)
                 messages.append({
                     "role": "user",
-                    "content": f"Here is the current composition:\n\n```json\n{context_json}\n```"
+                    "content": f"""Here is the current composition:\n\n```json\n{context_json}\n```\n\nUser request: '{user_prompt}'"""
                 })
-
-            messages.append({"role": "user", "content": f"User request: '{user_prompt}'"})
+            else:
+                messages.append({
+                    "role": "user",
+                    "content": f"User request: '{user_prompt}'"
+                })
 
             response = self.client.chat.completions.create(
                 model=self.model_name,
