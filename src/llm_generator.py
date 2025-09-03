@@ -212,7 +212,13 @@ class LLMGenerator:
                 messages=messages,
                 max_tokens=4096,
                 temperature=0.7,
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
+                extra_body={
+                    "provider": {
+                        "order": [os.getenv("OPENROUTER_PROVIDER")],
+                        "allow_fallbacks": False
+                    }
+                }
             )
 
             if not response.choices:
