@@ -150,11 +150,14 @@ Learn to create music with step-by-step prompts on the dub music example Covers:
 | Feature | Hugging Face GPT-OSS | OpenRouter | Google Gemini |
 |---------|---------------------|------------|---------------|
 | **Setup Time** | Instant | Instant | Instant |
-| **Cost** | Pay-per-use (~$0.005/composition) | Flexible pricing | Free tier available |
+| **Cost** | Monthly free quota, then pay-per-use (~$0.005/composition) | Daily free quota, then flexible pricing | Free tier available |
 | **Speed** | 2-15 seconds | 3-8 seconds | 3-8 seconds |
-| **Quality** | Excellent for structured output | Excellent for flexible model access | Creative and contextual |
-| **JSON Consistency** | Very reliable | Good | Good |
+| **Quality** | Good with specific, concise prompts | Best with specific, concise prompts | Creative and contextual |
+| **JSON Consistency** | Requires provider selection for reliability | Requires provider selection for reliability | Most consistent JSON output |
 | **Music Understanding** | Good | Excellent | Excellent |
+| **Reliability** | Reliable when provider is fixed | Reliable when provider is fixed | Consistently reliable |
+
+**Recommendation**: For GPT-OSS in HuggingFace and OpenRouter, select a specific provider and fix it using `OPENROUTER_PROVIDER` or `HF_PROVIDER` environment variable for consistent results.
 
 ## Effects System
 
