@@ -154,7 +154,7 @@ Learn to create music with step-by-step prompts on the dub music example Covers:
 | **Speed** | 2-15 seconds | 3-8 seconds | 3-8 seconds |
 | **Quality** | Good with specific, concise prompts | Best with specific, concise prompts | Creative and contextual |
 | **JSON Consistency** | Requires provider selection for reliability | Requires provider selection for reliability | Most consistent JSON output |
-| **Music Understanding** | Good | Excellent | Excellent |
+| **Music Understanding** | Good | Good | Excellent |
 | **Reliability** | Reliable when provider is fixed | Reliable when provider is fixed | Consistently reliable |
 
 **Recommendation**: For GPT-OSS in HuggingFace and OpenRouter, select a specific provider and fix it using `OPENROUTER_PROVIDER` or `HF_PROVIDER` environment variable for consistent results.
