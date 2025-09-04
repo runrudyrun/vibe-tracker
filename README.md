@@ -105,6 +105,7 @@ LLM_PROVIDER=auto
 ```
 
 **Provider Selection Priority:**
+0. According to LLM_PROVIDER variable (if it is set)
 1. Hugging Face GPT-OSS (if `HF_TOKEN` is set)
 2. OpenRouter (if `OPENROUTER_API_KEY` is set)
 3. Google Gemini (if `GOOGLE_API_KEY` is set)
@@ -218,7 +219,6 @@ vibe-tracker/
 │   └── ...
 ├── tests/                  # Test suites
 ├── patterns/               # Saved patterns
-├── docker/                 # Docker configurations
 └── scripts/                # Setup and utility scripts
 ```
 
