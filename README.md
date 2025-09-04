@@ -4,6 +4,9 @@ Vibe Tracker is a terminal-based music creation tool that allows you to compose 
 
 It features a persistent, callback-based audio engine for seamless, uninterrupted playback and live updates to the composition. You can add instruments, create patterns, and modify your track on the fly without ever stopping the music.
 
+## Demo
+[![Demo Video](https://img.youtube.com/vi/lUKt5bnnmFk/0.jpg)](https://www.youtube.com/watch?v=lUKt5bnnmFk)
+
 ## Features
 
 - **AI-Powered Composition**: Use natural language prompts (e.g., "add a funky bassline", "create a fast techno beat") to generate and modify music.
