@@ -1,6 +1,6 @@
 # Vibe Tracker - AI Music Studio
 
-Vibe Tracker is a terminal-based music creation tool that allows you to compose music in real-time using natural language commands, powered by multiple AI providers including GPT-OSS and Google's Gemini AI.
+Vibe Tracker is a terminal-based music creation tool that allows you to compose music in real-time using natural language commands, powered by multiple AI providers including GPT-OSS and Google's Gemini AI (and pretty much any model via HuggingFace or OpenRouter)
 
 It features a persistent, callback-based audio engine for seamless, uninterrupted playback and live updates to the composition. You can add instruments, create patterns, and modify your track on the fly without ever stopping the music.
 
